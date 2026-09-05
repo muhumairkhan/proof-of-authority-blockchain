@@ -1,0 +1,26 @@
+{
+  "name": "poa-blockchain-ts",
+  "version": "1.0.0",
+  "description": "Minimal Proof-of-Authority blockchain in TypeScript, built for learning.",
+  "main": "dist/node.js",
+  "scripts": {
+    "build": "tsc",
+    "generate-keys": "ts-node scripts/generate-keys.ts",
+    "node1": "cross-env API_PORT=3000 P2P_PORT=6000 VALIDATOR_INDEX=0 PEERS=ws://localhost:6001,ws://localhost:6002 ts-node src/node.ts",
+    "node2": "cross-env API_PORT=3001 P2P_PORT=6001 VALIDATOR_INDEX=1 PEERS=ws://localhost:6000,ws://localhost:6002 ts-node src/node.ts",
+    "node3": "cross-env API_PORT=3002 P2P_PORT=6002 VALIDATOR_INDEX=2 PEERS=ws://localhost:6000,ws://localhost:6001 ts-node src/node.ts",
+    "fullnode": "cross-env API_PORT=3003 P2P_PORT=6003 PEERS=ws://localhost:6000,ws://localhost:6001,ws://localhost:6002 ts-node src/node.ts"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.2",
+    "@types/ws": "^8.5.10",
+    "cross-env": "^7.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
