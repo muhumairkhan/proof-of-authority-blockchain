@@ -1,7 +1,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { generateValidatorKeyPair } from '../src/crypto';
 
-const NUM_VALIDATORS = 3;
+const NUM_VALIDATORS = 1;
 
 if (!existsSync('keys')) {
   mkdirSync('keys');
