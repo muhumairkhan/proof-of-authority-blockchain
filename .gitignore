@@ -5,7 +5,8 @@ node_modules/
 dist/
 
 # validator keys — private keys must never be committed
-/keys
+keys/
+data/
 
 # env / secrets
 .env

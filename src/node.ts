@@ -11,6 +11,8 @@ const PEERS = (process.env.PEERS || '').split(',').filter(Boolean);
 // Which key file this node holds, e.g. "0", "1", "2". Omit to run as a
 // non-validating full node (still syncs the chain and accepts transactions).
 const VALIDATOR_INDEX = process.env.VALIDATOR_INDEX;
+const DATA_FILE = process.env.DATA_FILE || `data/chain-${P2P_PORT}.json`;
+
 
 if (!existsSync('keys/validators-public.json')) {
   console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
@@ -33,7 +35,7 @@ if (VALIDATOR_INDEX !== undefined) {
   console.log('[node] Running as a non-validating full node');
 }
 
-const blockchain = new Blockchain(validatorSet);
+const blockchain = new Blockchain(validatorSet, DATA_FILE);
 const p2p = new P2PNode(blockchain, P2P_PORT);
 p2p.start();
 

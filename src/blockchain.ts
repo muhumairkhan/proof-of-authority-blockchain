@@ -1,15 +1,31 @@
 import { Block } from './block';
 import { ValidatorSet } from './validatorSet';
 import { Transaction } from './types';
+import { loadSnapshot, saveSnapshot } from './storage';
 
 export class Blockchain {
   chain: Block[];
   validatorSet: ValidatorSet;
   pendingTransactions: Transaction[] = [];
+  private dataFile?: string;
 
-  constructor(validatorSet: ValidatorSet) {
-    this.chain = [Block.createGenesisBlock()];
+  constructor(validatorSet: ValidatorSet, dataFile?: string) {
     this.validatorSet = validatorSet;
+    this.dataFile = dataFile;
+
+    const snapshot = dataFile ? loadSnapshot(dataFile) : null;
+    if (snapshot) {
+      this.chain = snapshot.chain.map((b) => Block.fromPlain(b));
+      this.pendingTransactions = snapshot.pendingTransactions;
+      console.log(`[storage] Restored ${this.chain.length} blocks (${this.pendingTransactions.length} pending tx) from ${dataFile}`);
+    } else {
+      this.chain = [Block.createGenesisBlock()];
+    }
+  }
+
+  private persist() {
+    if (!this.dataFile) return;
+    saveSnapshot(this.dataFile, { chain: this.chain, pendingTransactions: this.pendingTransactions });
   }
 
   getLatestBlock(): Block {
@@ -18,8 +34,10 @@ export class Blockchain {
 
   addTransaction(tx: Transaction) {
     this.pendingTransactions.push(tx);
+    this.persist();
   }
 
+  
   /**
    * The core validation rules for PoA. A block is only valid if:
    *  1. It correctly extends the previous block (index + previousHash line up)
@@ -47,7 +65,7 @@ export class Blockchain {
     return { valid: true };
   }
 
-  /** Accepts a block (plain object from network, or a real Block instance). */
+
   addBlock(rawBlock: any): { success: boolean; reason?: string } {
     const block = rawBlock instanceof Block ? rawBlock : Block.fromPlain(rawBlock);
     const latest = this.getLatestBlock();
@@ -56,7 +74,6 @@ export class Blockchain {
 
     this.chain.push(block);
 
-    // Remove any pending transactions that made it into this block.
     const includedKeys = new Set(
       block.transactions.map((t) => `${t.from}-${t.to}-${t.amount}-${t.timestamp}`)
     );
@@ -64,10 +81,11 @@ export class Blockchain {
       (t) => !includedKeys.has(`${t.from}-${t.to}-${t.amount}-${t.timestamp}`)
     );
 
+    this.persist();
     return { success: true };
   }
 
-  /** Validates an entire candidate chain (e.g. one received from a peer). */
+    /** Validates an entire candidate chain (e.g. one received from a peer). */
   isChainValid(rawChain: any[]): boolean {
     if (!Array.isArray(rawChain) || rawChain.length === 0) return false;
 
@@ -81,10 +99,7 @@ export class Blockchain {
     return true;
   }
 
-  /**
-   * Longest-valid-chain rule: only replace our chain if the candidate is
-   * both longer AND fully valid under our consensus rules.
-   */
+
   replaceChain(rawChain: any[]): { replaced: boolean; reason?: string } {
     if (!Array.isArray(rawChain) || rawChain.length <= this.chain.length) {
       return { replaced: false, reason: 'received chain is not longer than current chain' };
@@ -93,6 +108,12 @@ export class Blockchain {
       return { replaced: false, reason: 'received chain failed validation' };
     }
     this.chain = rawChain.map((b) => Block.fromPlain(b));
+    this.persist();
     return { replaced: true };
   }
 }
+
+
+
+
+  
