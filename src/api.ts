@@ -58,8 +58,6 @@ export function startApi(
     const nextIndex = latest.index + 1;
     const expectedValidator = blockchain.validatorSet.getValidatorForIndex(nextIndex);
 
-    console.log(myValidatorKeys)
-
     if (expectedValidator !== myValidatorKeys.publicKey) {
       return res.status(409).json({
         error: "It is not this node's turn to propose the next block",
