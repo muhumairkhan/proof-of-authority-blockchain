@@ -1,10 +1,10 @@
-# PoA Blockchain (TypeScript)
+# Proof of Authority (PoA) Blockchain (TypeScript)
 
-A minimal, multi-node Proof-of-Authority blockchain built for learning. It
-implements the actual hard parts of a blockchain — hashing, signatures, chain
-validation, P2P gossip, and fork resolution — without the complexity of
-mining or staking. See the "Where this goes next" section for how to layer
-Proof-of-Stake on top of this same codebase.
+A minimal, multi-node Proof-of-Authority blockchain implementation. It
+implements the core mechanics of a blockchain — hashing, signatures, chain
+validation, P2P gossip, and fork resolution — without the added complexity
+of mining or staking. See the "Where this goes next" section for how to
+layer Proof-of-Stake on top of this same codebase.
 
 ## Project structure
 
@@ -34,6 +34,11 @@ npm run generate-keys   # creates keys/validator-0.json, validator-1.json, valid
 validator set and whose turn it is. In a real deployment this would be
 distributed out-of-band (e.g. hardcoded in a genesis config); here it's just
 a shared file since everything runs locally.
+
+> Note: the number of validator keypairs generated is controlled by
+> `NUM_VALIDATORS` in `scripts/generate-keys.ts`. Set it to match the number
+> of validator nodes you intend to run (the 3-node example below expects
+> `NUM_VALIDATORS = 3`).
 
 ## Running a 3-node network
 
@@ -89,54 +94,34 @@ npm run fullnode   # API on :3003, P2P on :6003 — just syncs and relays
    curl http://localhost:3000/status
    ```
 
-## What each design choice teaches you
+## Design notes
 
 - **`block.ts`**: separates a block's _content hash_ from its _validator
-  signature_ — a common source of confusion. The hash proves the content
-  wasn't tampered with; the signature proves who authorized it.
-- **`validatorSet.ts`**: the entire "authority" mechanism is just
-  `validators[blockIndex % validators.length]`. This is intentionally the
-  simplest possible leader-selection rule so you can see the concept clearly
-  before adding weighted/random selection (PoS) later.
+  signature_. The hash proves the content wasn't tampered with; the
+  signature proves who authorized it.
+- **`validatorSet.ts`**: the entire authority mechanism is just
+  `validators[blockIndex % validators.length]`. This is the simplest
+  possible leader-selection rule, ahead of adding weighted/random selection
+  (PoS) later.
 - **`blockchain.ts` → `isValidNewBlock`**: this is the actual consensus rule
   set. Every node runs the exact same checks, which is what lets independent
   nodes agree without trusting each other directly — they trust the _rules_.
 - **`p2p.ts`**: implements the two things every blockchain network needs —
-  gossip (gestures at "propagate new data to everyone") and chain sync
-  (resolve disagreements using the longest-valid-chain rule). This is
-  usually the part tutorials skip, and where the interesting bugs live
-  (e.g. what happens if two blocks arrive out of order).
+  gossip (propagate new data to everyone) and chain sync (resolve
+  disagreements using the longest-valid-chain rule). This is where the
+  more interesting edge cases live (e.g. what happens if two blocks arrive
+  out of order).
 
-## Known simplifications (intentional, for a learning project)
+## Known limitations
 
-- No persistent storage — chain lives in memory and resets when a node restarts.
+- No persistent storage beyond a local JSON snapshot — chain state is
+  reloaded from `DATA_FILE` on restart but there's no database or
+  replication.
 - No mempool deduplication beyond exact-match on `{from, to, amount, timestamp}`.
 - `replaceChain` doesn't verify all nodes started from an identical genesis
-  block — fine for a single trusted deployment, not fine for a real network.
-- No transaction signing/wallets yet — `from`/`to` are just plain strings,
-  not actually authenticated. Anyone can submit `{"from": "bob", ...}` and
-  claim to be Bob. Real chains sign every transaction with the sender's
-  private key, not just blocks with the validator's key.
-- Private keys are stored in plaintext JSON files — fine for local learning,
-  never do this in anything real.
-
-## Where this goes next: adding Proof-of-Stake
-
-Because `blockchain.ts` and `p2p.ts` don't care _how_ a validator is chosen —
-only that `validatorSet.getValidatorForIndex()` returns someone — you can
-swap PoA for PoS without touching networking or chain-validation code much:
-
-1. Replace `ValidatorSet` with a `StakeRegistry` that tracks
-   `{ publicKey, stakedAmount }[]`.
-2. Replace round-robin selection with stake-weighted random selection
-   (seed the randomness from the previous block's hash so it's
-   deterministic and verifiable by every node).
-3. Add a `/stake` and `/unstake` endpoint plus transactions that adjust the
-   registry.
-4. Add slashing: if `isValidNewBlock` ever detects two different blocks
-   signed by the same validator for the same index (equivocation), mark
-   that validator as slashed and remove their stake.
-
-Steps 1–3 are a reasonable weekend project on top of this codebase. Step 4
-(proper slashing with evidence handling) is where real complexity starts —
-worth doing once the rest feels solid.
+  block — fine for a single trusted deployment, not sufficient for an
+  open/untrusted network.
+- No transaction signing/wallets yet — `from`/`to` are plain strings, not
+  authenticated. Anyone can submit `{"from": "bob", ...}` and claim to be
+  Bob. Real chains sign every transaction with the sender's private key,
+  not just blocks with the validator's key.
