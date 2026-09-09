@@ -4,6 +4,7 @@ import { P2PNode } from './p2p';
 import { Block } from './block';
 import { Transaction } from './types';
 import { KeyPair } from './crypto';
+import cors from 'cors';
 
 export function startApi(
   blockchain: Blockchain,
@@ -12,6 +13,7 @@ export function startApi(
   myValidatorKeys: KeyPair | null
 ) {
   const app = express();
+  app.use(cors());
   app.use(express.json());
 
   app.get('/blocks', (_req, res) => {
