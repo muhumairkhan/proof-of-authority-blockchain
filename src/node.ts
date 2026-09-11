@@ -3,7 +3,7 @@ import { Blockchain } from './blockchain';
 import { ValidatorSet } from './validatorSet';
 import { P2PNode } from './p2p';
 import { startApi } from './api';
-import { KeyPair } from './crypto';
+import { KeyPair, EncryptedPrivateKey, decryptPrivateKey } from './crypto';
 
 const API_PORT = Number(process.env.API_PORT || 3000);
 const P2P_PORT = Number(process.env.P2P_PORT || 6000);
@@ -29,7 +29,32 @@ if (VALIDATOR_INDEX !== undefined) {
     console.error(`No key file found at ${path}`);
     process.exit(1);
   }
-  myKeys = JSON.parse(readFileSync(path, 'utf-8'));
+
+  const passphrase = process.env.VALIDATOR_KEY_PASSPHRASE;
+  if (!passphrase) {
+    console.error(
+      '[node] Missing VALIDATOR_KEY_PASSPHRASE — this validator\'s private key is encrypted\n' +
+      '       at rest and cannot be loaded without the passphrase it was generated with.'
+    );
+    process.exit(1);
+  }
+
+  const stored = JSON.parse(readFileSync(path, 'utf-8')) as {
+    publicKey: string;
+    encryptedPrivateKey: EncryptedPrivateKey;
+  };
+
+  try {
+    const privateKey = decryptPrivateKey(stored.encryptedPrivateKey, passphrase);
+    myKeys = { publicKey: stored.publicKey, privateKey };
+  } catch {
+    // Fail closed: wrong passphrase or a corrupted/tampered key file both
+    // land here (GCM auth tag check fails either way). Never fall back to
+    // running unsigned or with a bad key.
+    console.error('[node] Failed to decrypt validator private key — wrong VALIDATOR_KEY_PASSPHRASE?');
+    process.exit(1);
+  }
+
   console.log(`[node] Running as validator #${VALIDATOR_INDEX}`);
 } else {
   console.log('[node] Running as a non-validating full node');

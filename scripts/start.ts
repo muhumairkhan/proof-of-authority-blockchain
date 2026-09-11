@@ -22,6 +22,18 @@ if (!existsSync('keys/validators-public.json')) {
   process.exit(1);
 }
 
+// Private keys are encrypted at rest (see src/crypto.ts). Every validator
+// process spawned below needs this passphrase to decrypt its own key, so
+// check it up front rather than letting each child fail separately.
+if (!process.env.VALIDATOR_KEY_PASSPHRASE) {
+  console.error(
+    '[start] Missing VALIDATOR_KEY_PASSPHRASE.\n' +
+    '        Set it to the same passphrase used with `npm run generate-keys`, e.g.\n' +
+    '          VALIDATOR_KEY_PASSPHRASE="correct horse battery staple" npm start'
+  );
+  process.exit(1);
+}
+
 const publicKeys: string[] = JSON.parse(readFileSync('keys/validators-public.json', 'utf-8'));
 const numValidators = publicKeys.length;
 

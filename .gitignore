@@ -23,3 +23,5 @@ npm-debug.log*
 
 # npm/ts-node cache
 .npm/
+
+*.code-workspace
