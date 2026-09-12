@@ -113,10 +113,6 @@ npm run fullnode   # API on :3003, P2P on :6003 — just syncs and relays
   out of order).
 
 ## Known limitations
-
-- No persistent storage beyond a local JSON snapshot — chain state is
-  reloaded from `DATA_FILE` on restart but there's no database or
-  replication.
 - No mempool deduplication beyond exact-match on `{from, to, amount, timestamp}`.
 - `replaceChain` doesn't verify all nodes started from an identical genesis
   block — fine for a single trusted deployment, not sufficient for an
