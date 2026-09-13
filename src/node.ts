@@ -4,6 +4,7 @@ import { ValidatorSet } from './validatorSet';
 import { P2PNode } from './p2p';
 import { startApi } from './api';
 import { KeyPair, EncryptedPrivateKey, decryptPrivateKey } from './crypto';
+import 'dotenv/config';
 
 const API_PORT = Number(process.env.API_PORT || 3000);
 const P2P_PORT = Number(process.env.P2P_PORT || 6000);

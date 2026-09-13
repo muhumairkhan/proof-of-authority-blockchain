@@ -8,13 +8,14 @@
     "generate-keys": "ts-node scripts/generate-keys.ts",
     "reset": "ts-node scripts/reset.ts",
     "start": "ts-node scripts/start.ts",
-    "node1": "cross-env API_PORT=3000 P2P_PORT=6000 VALIDATOR_INDEX=0 PEERS=ws://localhost:6001,ws://localhost:6002 VALIDATOR_KEY_PASSPHRASE=dev-only-change-me ts-node src/node.ts",
-    "node2": "cross-env API_PORT=3001 P2P_PORT=6001 VALIDATOR_INDEX=1 PEERS=ws://localhost:6000,ws://localhost:6002 VALIDATOR_KEY_PASSPHRASE=dev-only-change-me ts-node src/node.ts",
-    "node3": "cross-env API_PORT=3002 P2P_PORT=6002 VALIDATOR_INDEX=2 PEERS=ws://localhost:6000,ws://localhost:6001 VALIDATOR_KEY_PASSPHRASE=dev-only-change-me ts-node src/node.ts",
+    "node1": "cross-env API_PORT=3000 P2P_PORT=6000 VALIDATOR_INDEX=0 PEERS=ws://localhost:6001,ws://localhost:6002 ts-node src/node.ts",
+    "node2": "cross-env API_PORT=3001 P2P_PORT=6001 VALIDATOR_INDEX=1 PEERS=ws://localhost:6000,ws://localhost:6002 ts-node src/node.ts",
+    "node3": "cross-env API_PORT=3002 P2P_PORT=6002 VALIDATOR_INDEX=2 PEERS=ws://localhost:6000,ws://localhost:6001 ts-node src/node.ts",
     "fullnode": "cross-env API_PORT=3003 P2P_PORT=6003 PEERS=ws://localhost:6000,ws://localhost:6001,ws://localhost:6002 ts-node src/node.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "ws": "^8.17.0"
   },

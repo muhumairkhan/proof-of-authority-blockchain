@@ -1,5 +1,6 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { generateValidatorKeyPair, encryptPrivateKey } from '../src/crypto';
+import 'dotenv/config';
 
 // Configurable so `reset`/`start` can agree on how many validators to spin up,
 // e.g. NUM_VALIDATORS=5 npm run reset

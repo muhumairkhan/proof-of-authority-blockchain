@@ -1,5 +1,6 @@
 import { rmSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
+import 'dotenv/config';
 
 for (const dir of ['keys', 'data']) {
   if (existsSync(dir)) {

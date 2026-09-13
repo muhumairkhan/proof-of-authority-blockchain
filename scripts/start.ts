@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'fs';
 import { spawn, execSync, ChildProcess } from 'child_process';
+import 'dotenv/config';
 
 const BASE_API_PORT = Number(process.env.BASE_API_PORT || 3000);
 const BASE_P2P_PORT = Number(process.env.BASE_P2P_PORT || 6000);

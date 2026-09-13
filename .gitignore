@@ -10,7 +10,6 @@ data/
 
 # env / secrets
 .env
-.env.*
 
 # logs
 *.log
