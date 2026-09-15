@@ -32,10 +32,21 @@ export class Blockchain {
     return this.chain[this.chain.length - 1];
   }
 
-  addTransaction(tx: Transaction) {
+  /** Returns false (no-op) if this transaction is already pending. */
+  addTransaction(tx: Transaction): boolean {
+    const key = this.txKey(tx);
+    const alreadyPending = this.pendingTransactions.some((t) => this.txKey(t) === key);
+    if (alreadyPending) return false;
+
     this.pendingTransactions.push(tx);
     this.persist();
+    return true;
   }
+
+  private txKey(tx: Transaction): string {
+    return `${tx.from}-${tx.to}-${tx.amount}-${tx.timestamp}`;
+  }
+
 
   
   /**
