@@ -77,9 +77,16 @@ export class Blockchain {
   }
 
 
-  addBlock(rawBlock: any): { success: boolean; reason?: string } {
+  addBlock(rawBlock: any): { success: boolean; reason?: string; alreadyHave?: boolean } {
     const block = rawBlock instanceof Block ? rawBlock : Block.fromPlain(rawBlock);
     const latest = this.getLatestBlock();
+
+    // Duplicate delivery from mesh flooding — not an error, just skip.
+    if (block.index <= latest.index) {
+      return { success: false, reason: 'already have this block or an equal/later one', alreadyHave: true };
+    }
+
+
     const check = this.isValidNewBlock(block, latest);
     if (!check.valid) return { success: false, reason: check.reason };
 
