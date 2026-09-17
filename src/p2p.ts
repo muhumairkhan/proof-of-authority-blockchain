@@ -71,6 +71,8 @@ export class P2PNode {
         if (result.success) {
           console.log(`[chain] Accepted new block #${message.block.index} from network`);
           this.broadcast({ type: 'NEW_BLOCK', block: message.block }, socket);
+        } else if (result.alreadyHave) {
+          // Silent no-op — this is expected under mesh flooding, don't resync or spam logs.
         } else {
           console.log(`[chain] Rejected block from network (${result.reason}) — requesting full chain`);
           this.send(socket, { type: 'CHAIN_REQUEST' });
