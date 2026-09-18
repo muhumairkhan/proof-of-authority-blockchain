@@ -51,14 +51,26 @@ export function startApi(
   });
 
   // Manually trigger this node to propose the next block, if it's actually its turn.
+  // Manually trigger this node to propose the next block, if it's actually its turn.
   app.post('/propose', (_req, res) => {
     if (!myValidatorKeys) {
       return res.status(400).json({ error: 'This node has no validator keys configured (VALIDATOR_INDEX not set)' });
     }
 
+    const now = Date.now();
+    const SLOT_WAIT_TIME_MS = 3000;
+    const timeIntoSlot = now % blockchain.slotDurationMs;
+
+    // Check if 3 seconds have passed in the current slot
+    if (timeIntoSlot < SLOT_WAIT_TIME_MS) {
+      return res.status(429).json({
+        error: `Must wait 3 seconds within the slot before proposing. ${SLOT_WAIT_TIME_MS - timeIntoSlot}ms remaining.`,
+        timeIntoSlot,
+      });
+    }
+
     const latest = blockchain.getLatestBlock();
     const nextIndex = latest.index + 1;
-    const now = Date.now();
     const currentSlot = Math.floor(now / blockchain.slotDurationMs);
     const previousSlot = Math.floor(latest.timestamp / blockchain.slotDurationMs);
 

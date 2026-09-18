@@ -89,6 +89,13 @@ export class Blockchain {
     if (blockSlot <= previousSlot) {
       return { valid: false, reason: 'block timestamp falls in an already-used or past time slot' };
     }
+
+    // ENFORCE 3-SECOND DELAY INSIDE THE SLOT
+    const timeIntoSlot = block.timestamp % slotMs;
+    if (timeIntoSlot < 3000) {
+      return { valid: false, reason: 'block was proposed before the 3-second slot wait time' };
+    }
+
     const expectedValidator = this.validatorSet.getValidatorForSlot(blockSlot);
     if (block.validatorPublicKey !== expectedValidator) {
       return { valid: false, reason: 'block was not signed by the validator assigned to this time slot' };
