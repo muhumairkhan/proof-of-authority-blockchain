@@ -86,13 +86,14 @@ export class Blockchain {
     const slotMs = this.slotDurationMs;
     const blockSlot = Math.floor(block.timestamp / slotMs);
     const previousSlot = Math.floor(previousBlock.timestamp / slotMs);
+     const slotStartTime = blockSlot * slotMs;
+
     if (blockSlot <= previousSlot) {
       return { valid: false, reason: 'block timestamp falls in an already-used or past time slot' };
     }
-
-    // ENFORCE 3-SECOND DELAY INSIDE THE SLOT
-    const timeIntoSlot = block.timestamp % slotMs;
-    if (timeIntoSlot < 3000) {
+ 
+    // Reject block if it was produced before 3 second into propose slot time
+    if (block.timestamp - slotStartTime < 3000) {
       return { valid: false, reason: 'block was proposed before the 3-second slot wait time' };
     }
 
