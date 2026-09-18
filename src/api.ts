@@ -29,15 +29,30 @@ export function startApi(
   });
 
   app.get('/status', (_req, res) => {
-    const latest = blockchain.getLatestBlock();
-    res.json({
-      chainLength: blockchain.chain.length,
-      latestBlockIndex: latest.index,
-      latestBlockHash: latest.hash,
-      pendingTransactions: blockchain.pendingTransactions.length,
-      isValidator: myValidatorKeys !== null,
-    });
+  const latest = blockchain.getLatestBlock();
+  const now = Date.now();
+  const slotMs = blockchain.slotDurationMs;
+  const currentSlot = Math.floor(now / slotMs);
+  const validators = blockchain.validatorSet.getAll();
+  const n = validators.length;
+
+  res.json({
+    chainLength: blockchain.chain.length,
+    latestBlockIndex: latest.index,
+    latestBlockHash: latest.hash,
+    latestBlockTimestamp: latest.timestamp,
+    pendingTransactions: blockchain.pendingTransactions.length,
+    isValidator: myValidatorKeys !== null,
+
+    // slot info for the UI
+    serverTime: now,
+    slotDurationMs: slotMs,
+    slotWaitMs: 3000,
+    currentSlot,
+    currentProposerIndex: currentSlot % n,
+    nextProposerIndex: (currentSlot + 1) % n,
   });
+});
 
   app.post('/transactions', (req, res) => {
     const { from, to, amount } = req.body;
