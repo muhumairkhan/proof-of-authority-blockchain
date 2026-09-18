@@ -8,9 +8,20 @@ export class ValidatorSet {
     this.validators = validators;
   }
 
-  /** Simple round-robin: block index N is always signed by the same validator. */
-  getValidatorForIndex(blockIndex: number): string {
-    return this.validators[(blockIndex - 1) % this.validators.length];
+  /**
+   * Which validator owns a given time slot. Slots are fixed-width buckets
+   * of wall-clock time measured from a shared, fixed origin (time 0 —
+   * equivalent to genesis's own fixed timestamp of 0), so every node
+   * computes the exact same owner for the exact same slot number without
+   * needing to agree on chain height or on which peers are "up".
+   * Ownership cycles through the validator set indefinitely: if a slot's
+   * owner doesn't propose in time, the NEXT slot (a fixed time later)
+   * automatically belongs to a different validator — no timeout detection
+   * or liveness-checking needed anywhere.
+   */
+  getValidatorForSlot(slot: number): string {
+    const n = this.validators.length;
+    return this.validators[((slot % n) + n) % n]; // defensive mod for any negative slot
   }
 
   isKnownValidator(publicKey: string): boolean {

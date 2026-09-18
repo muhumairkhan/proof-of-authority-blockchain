@@ -58,19 +58,31 @@ export function startApi(
 
     const latest = blockchain.getLatestBlock();
     const nextIndex = latest.index + 1;
-    const expectedValidator = blockchain.validatorSet.getValidatorForIndex(nextIndex);
+    const now = Date.now();
+    const currentSlot = Math.floor(now / blockchain.slotDurationMs);
+    const previousSlot = Math.floor(latest.timestamp / blockchain.slotDurationMs);
+
+    if (currentSlot <= previousSlot) {
+      return res.status(409).json({
+        error: 'The current time slot has already been used by an earlier block — wait for the next slot',
+        currentSlot,
+      });
+    }
+
+    const expectedValidator = blockchain.validatorSet.getValidatorForSlot(currentSlot);
 
     if (expectedValidator !== myValidatorKeys.publicKey) {
       return res.status(409).json({
-        error: "It is not this node's turn to propose the next block",
+        error: "It is not this node's turn to propose in the current time slot",
         nextIndex,
+        currentSlot,
       });
     }
 
     const block = Block.proposeBlock(
       {
         index: nextIndex,
-        timestamp: Date.now(),
+        timestamp: now,
         transactions: blockchain.pendingTransactions,
         previousHash: latest.hash,
         validatorPublicKey: myValidatorKeys.publicKey,

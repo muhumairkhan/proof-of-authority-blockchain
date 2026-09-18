@@ -3,6 +3,7 @@ import { Blockchain } from './blockchain';
 import { ValidatorSet } from './validatorSet';
 import { P2PNode } from './p2p';
 import { startApi } from './api';
+import { Block } from './block';
 import { KeyPair, EncryptedPrivateKey, decryptPrivateKey } from './crypto';
 import 'dotenv/config';
 
@@ -13,6 +14,13 @@ const PEERS = (process.env.PEERS || '').split(',').filter(Boolean);
 // non-validating full node (still syncs the chain and accepts transactions).
 const VALIDATOR_INDEX = process.env.VALIDATOR_INDEX;
 const DATA_FILE = process.env.DATA_FILE || `data/chain-${P2P_PORT}.json`;
+
+// Fixed width of a time slot in ms. Ownership of each slot cycles through
+// the validator set based purely on wall-clock time (see
+// ValidatorSet.getValidatorForSlot) — this MUST be the same value on every
+// node, or nodes will compute different slot numbers for the same moment
+// and reject each other's blocks.
+const BLOCK_TIMEOUT_MS = Number(process.env.BLOCK_TIMEOUT_MS || 15000);
 
 
 if (!existsSync('keys/validators-public.json')) {
@@ -61,7 +69,7 @@ if (VALIDATOR_INDEX !== undefined) {
   console.log('[node] Running as a non-validating full node');
 }
 
-const blockchain = new Blockchain(validatorSet, DATA_FILE);
+const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS);
 const p2p = new P2PNode(blockchain, P2P_PORT);
 p2p.start();
 
@@ -70,3 +78,58 @@ for (const peer of PEERS) {
 }
 
 startApi(blockchain, p2p, API_PORT, myKeys);
+
+// --- Automatic block proposal -----------------------------------------
+// Each validator checks, on a short poll, whether (a) there's actually
+// something to propose (a non-empty mempool) and (b) it owns the CURRENT
+// time slot (see ValidatorSet.getValidatorForSlot). If a slot's assigned
+// owner is down, that slot is simply never used — the clock keeps
+// advancing, and the next slot belongs to a different validator (`% n`),
+// so the rotation naturally moves on without anyone needing to check who's
+// "connected" to whom. No manual /propose calls, no grace buffers, no
+// offset math: ownership of "now" is a pure function of wall-clock time
+// that every node computes identically.
+//
+// The manual POST /propose endpoint in api.ts still exists and uses the
+// exact same slot-ownership check, so it stays useful for forcing an
+// immediate proposal during testing/demos.
+if (myKeys) {
+  const POLL_INTERVAL_MS = Math.max(250, Math.floor(BLOCK_TIMEOUT_MS / 10));
+
+  setInterval(() => {
+    if (blockchain.pendingTransactions.length === 0) return; // nothing to propose
+
+    const latest = blockchain.getLatestBlock();
+    const currentSlot = Math.floor(Date.now() / BLOCK_TIMEOUT_MS);
+    const previousSlot = Math.floor(latest.timestamp / BLOCK_TIMEOUT_MS);
+
+    if (currentSlot <= previousSlot) return; // this slot's already been used by an earlier block
+
+    const owner = validatorSet.getValidatorForSlot(currentSlot);
+    if (owner !== myKeys!.publicKey) return; // not my slot
+
+    const block = Block.proposeBlock(
+      {
+        index: latest.index + 1,
+        timestamp: Date.now(),
+        transactions: blockchain.pendingTransactions,
+        previousHash: latest.hash,
+        validatorPublicKey: myKeys!.publicKey,
+      },
+      myKeys!.privateKey
+    );
+
+    const result = blockchain.addBlock(block);
+    if (result.success) {
+      console.log(`[auto-propose] Proposed block #${block.index} for slot ${currentSlot}`);
+      p2p.broadcastNewBlock(block);
+    } else if (!result.alreadyHave) {
+      // A genuine validation failure here is worth knowing about; a
+      // duplicate ("alreadyHave") just means someone else's block for this
+      // slot/index landed moments before ours — routine, not logged.
+      console.warn(`[auto-propose] Attempt for block #${latest.index + 1} rejected locally: ${result.reason}`);
+    }
+  }, POLL_INTERVAL_MS);
+
+  console.log(`[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms`);
+}
