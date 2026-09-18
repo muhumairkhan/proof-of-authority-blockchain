@@ -69,10 +69,19 @@ export class P2PNode {
       case 'NEW_BLOCK': {
         const result = this.blockchain.addBlock(message.block);
         if (result.success) {
-          console.log(`[chain] Accepted new block #${message.block.index} from network`);
+          // Identify which validator proposed this block
+          const validatorIndex = this.blockchain.validatorSet
+            .getAll()
+            .indexOf(message.block.validatorPublicKey);
+
+          const proposerLabel = validatorIndex !== -1 
+            ? `validator #${validatorIndex}` 
+            : `unknown (${message.block.validatorPublicKey.slice(0, 10)}...)`;
+
+          console.log(`[chain] Accepted new block #${message.block.index} proposed by ${proposerLabel}`);
           this.broadcast({ type: 'NEW_BLOCK', block: message.block }, socket);
         } else if (result.alreadyHave) {
-          // Silent no-op — this is expected under mesh flooding, don't resync or spam logs.
+          // Silent no-op — expected under mesh flooding
         } else {
           console.log(`[chain] Rejected block from network (${result.reason}) — requesting full chain`);
           this.send(socket, { type: 'CHAIN_REQUEST' });

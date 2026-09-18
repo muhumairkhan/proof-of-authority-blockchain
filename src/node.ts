@@ -93,17 +93,25 @@ startApi(blockchain, p2p, API_PORT, myKeys);
 // The manual POST /propose endpoint in api.ts still exists and uses the
 // exact same slot-ownership check, so it stays useful for forcing an
 // immediate proposal during testing/demos.
+// --- Automatic block proposal -----------------------------------------
 if (myKeys) {
   const POLL_INTERVAL_MS = Math.max(250, Math.floor(BLOCK_TIMEOUT_MS / 10));
+  const SLOT_WAIT_TIME_MS = 3000; // Mandatory wait time within slot
 
   setInterval(() => {
     if (blockchain.pendingTransactions.length === 0) return; // nothing to propose
 
+    const now = Date.now();
+    const currentSlot = Math.floor(now / BLOCK_TIMEOUT_MS);
+    
+    // 1. Calculate how many milliseconds have passed into the current slot
+    const timeIntoSlot = now % BLOCK_TIMEOUT_MS;
+    if (timeIntoSlot < SLOT_WAIT_TIME_MS) return; // Wait until 3 seconds pass in slot
+
     const latest = blockchain.getLatestBlock();
-    const currentSlot = Math.floor(Date.now() / BLOCK_TIMEOUT_MS);
     const previousSlot = Math.floor(latest.timestamp / BLOCK_TIMEOUT_MS);
 
-    if (currentSlot <= previousSlot) return; // this slot's already been used by an earlier block
+    if (currentSlot <= previousSlot) return; // slot already used
 
     const owner = validatorSet.getValidatorForSlot(currentSlot);
     if (owner !== myKeys!.publicKey) return; // not my slot
@@ -111,7 +119,7 @@ if (myKeys) {
     const block = Block.proposeBlock(
       {
         index: latest.index + 1,
-        timestamp: Date.now(),
+        timestamp: now,
         transactions: blockchain.pendingTransactions,
         previousHash: latest.hash,
         validatorPublicKey: myKeys!.publicKey,
@@ -121,15 +129,12 @@ if (myKeys) {
 
     const result = blockchain.addBlock(block);
     if (result.success) {
-      console.log(`[auto-propose] Proposed block #${block.index} for slot ${currentSlot}`);
+      console.log(`[auto-propose] Proposed block #${block.index} as validator #${VALIDATOR_INDEX} for slot ${currentSlot}`);
       p2p.broadcastNewBlock(block);
     } else if (!result.alreadyHave) {
-      // A genuine validation failure here is worth knowing about; a
-      // duplicate ("alreadyHave") just means someone else's block for this
-      // slot/index landed moments before ours — routine, not logged.
       console.warn(`[auto-propose] Attempt for block #${latest.index + 1} rejected locally: ${result.reason}`);
     }
   }, POLL_INTERVAL_MS);
 
-  console.log(`[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms`);
+  console.log(`[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms (3s slot delay enforced)`);
 }
