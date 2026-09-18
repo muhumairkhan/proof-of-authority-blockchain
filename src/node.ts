@@ -22,6 +22,10 @@ const DATA_FILE = process.env.DATA_FILE || `data/chain-${P2P_PORT}.json`;
 // and reject each other's blocks.
 const BLOCK_TIMEOUT_MS = Number(process.env.BLOCK_TIMEOUT_MS || 15000);
 
+// Mandatory wait inside each slot before its owner may propose. Like
+// BLOCK_TIMEOUT_MS, this MUST match on every node.
+const SLOT_WAIT_MS = Number(process.env.SLOT_WAIT_MS || 3000);
+
 
 if (!existsSync('keys/validators-public.json')) {
   console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
@@ -69,7 +73,7 @@ if (VALIDATOR_INDEX !== undefined) {
   console.log('[node] Running as a non-validating full node');
 }
 
-const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS);
+const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS, SLOT_WAIT_MS);
 const p2p = new P2PNode(blockchain, P2P_PORT);
 p2p.start();
 
@@ -96,17 +100,15 @@ startApi(blockchain, p2p, API_PORT, myKeys);
 // --- Automatic block proposal -----------------------------------------
 if (myKeys) {
   const POLL_INTERVAL_MS = Math.max(250, Math.floor(BLOCK_TIMEOUT_MS / 10));
-  const SLOT_WAIT_TIME_MS = 3000; // Mandatory wait time within slot
 
   setInterval(() => {
-    if (blockchain.pendingTransactions.length === 0) return; // nothing to propose
+    if (blockchain.pendingTransactions.length === 0) return;
 
     const now = Date.now();
-    const currentSlot = Math.floor(now / BLOCK_TIMEOUT_MS);
-    
-    // 1. Calculate how many milliseconds have passed into the current slot
-    const timeIntoSlot = now % BLOCK_TIMEOUT_MS;
-    if (timeIntoSlot < SLOT_WAIT_TIME_MS) return; // Wait until 3 seconds pass in slot
+    const currentSlot = Math.floor(now / blockchain.slotDurationMs);
+
+    const timeIntoSlot = now % blockchain.slotDurationMs;
+    if (timeIntoSlot < blockchain.slotWaitMs) return; // still in the wait period
 
     const latest = blockchain.getLatestBlock();
     const previousSlot = Math.floor(latest.timestamp / BLOCK_TIMEOUT_MS);

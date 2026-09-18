@@ -16,10 +16,27 @@ export class Blockchain {
   // moment and reject each other's blocks.
   slotDurationMs: number;
 
-  constructor(validatorSet: ValidatorSet, dataFile?: string, slotDurationMs = 15000) {
+  // Minimum time a validator must wait after a slot begins before it may
+  // propose in it. Part of the consensus rules: MUST be identical on every
+  // node, same as slotDurationMs.
+  slotWaitMs: number;
+
+  constructor(
+    validatorSet: ValidatorSet,
+    dataFile?: string,
+    slotDurationMs = 15000,
+    slotWaitMs = 3000
+  ) {
+    if (slotWaitMs < 0 || slotWaitMs >= slotDurationMs) {
+      throw new Error(
+        `slotWaitMs (${slotWaitMs}) must be >= 0 and less than slotDurationMs (${slotDurationMs})`
+      );
+    }
+
     this.validatorSet = validatorSet;
     this.dataFile = dataFile;
     this.slotDurationMs = slotDurationMs;
+    this.slotWaitMs = slotWaitMs;
 
     const snapshot = dataFile ? loadSnapshot(dataFile) : null;
     if (snapshot) {
@@ -92,9 +109,9 @@ export class Blockchain {
       return { valid: false, reason: 'block timestamp falls in an already-used or past time slot' };
     }
  
-    // Reject block if it was produced before 3 second into propose slot time
-    if (block.timestamp - slotStartTime < 3000) {
-      return { valid: false, reason: 'block was proposed before the 3-second slot wait time' };
+    // Reject block if it was produced before the mandatory wait time into its slot
+    if (block.timestamp - slotStartTime < this.slotWaitMs) {
+      return { valid: false, reason: `block was proposed before the ${this.slotWaitMs}ms slot wait time` };
     }
 
     const expectedValidator = this.validatorSet.getValidatorForSlot(blockSlot);

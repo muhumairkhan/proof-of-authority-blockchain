@@ -47,7 +47,7 @@ export function startApi(
     // slot info for the UI
     serverTime: now,
     slotDurationMs: slotMs,
-    slotWaitMs: 3000,
+    slotWaitMs: blockchain.slotWaitMs,
     currentSlot,
     currentProposerIndex: currentSlot % n,
     nextProposerIndex: (currentSlot + 1) % n,
@@ -73,13 +73,12 @@ export function startApi(
     }
 
     const now = Date.now();
-    const SLOT_WAIT_TIME_MS = 3000;
     const timeIntoSlot = now % blockchain.slotDurationMs;
 
-    // Check if 3 seconds have passed in the current slot
-    if (timeIntoSlot < SLOT_WAIT_TIME_MS) {
+    if (timeIntoSlot < blockchain.slotWaitMs) {
+      const remaining = blockchain.slotWaitMs - timeIntoSlot;
       return res.status(429).json({
-        error: `Must wait 3 seconds within the slot before proposing. ${SLOT_WAIT_TIME_MS - timeIntoSlot}ms remaining.`,
+        error: `Must wait ${blockchain.slotWaitMs}ms within the slot before proposing. ${remaining}ms remaining.`,
         timeIntoSlot,
       });
     }
