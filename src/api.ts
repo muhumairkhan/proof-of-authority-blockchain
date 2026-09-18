@@ -29,31 +29,28 @@ export function startApi(
   });
 
   app.get('/status', (_req, res) => {
-  const latest = blockchain.getLatestBlock();
-  const now = Date.now();
-  const slotMs = blockchain.slotDurationMs;
-  const currentSlot = Math.floor(now / slotMs);
-  const validators = blockchain.validatorSet.getAll();
-  const n = validators.length;
+    const latest = blockchain.getLatestBlock();
+    const now = Date.now();
+    const currentSlot = blockchain.getSlot(now);
 
-  res.json({
-    chainLength: blockchain.chain.length,
-    latestBlockIndex: latest.index,
-    latestBlockHash: latest.hash,
-    latestBlockTimestamp: latest.timestamp,
-    pendingTransactions: blockchain.pendingTransactions.length,
-    isValidator: myValidatorKeys !== null,
+    res.json({
+      chainLength: blockchain.chain.length,
+      latestBlockIndex: latest.index,
+      latestBlockHash: latest.hash,
+      latestBlockTimestamp: latest.timestamp,
+      pendingTransactions: blockchain.pendingTransactions.length,
+      isValidator: myValidatorKeys !== null,
 
-    // slot info for the UI
-    serverTime: now,
-    slotDurationMs: slotMs,
-    slotWaitMs: blockchain.slotWaitMs,
-    currentSlot,
-    currentProposerIndex: currentSlot % n,
-    nextProposerIndex: (currentSlot + 1) % n,
+      // slot info for the UI
+      serverTime: now,
+      slotDurationMs: blockchain.slotDurationMs,
+      slotWaitMs: blockchain.slotWaitMs,
+      currentSlot,
+      currentProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot),
+      nextProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot + 1),
+    });
   });
-});
-
+  
   app.post('/transactions', (req, res) => {
     const { from, to, amount } = req.body;
     if (typeof from !== 'string' || typeof to !== 'string' || typeof amount !== 'number') {
@@ -66,29 +63,26 @@ export function startApi(
   });
 
   // Manually trigger this node to propose the next block, if it's actually its turn.
-  // Manually trigger this node to propose the next block, if it's actually its turn.
-  app.post('/propose', (_req, res) => {
+    app.post('/propose', (_req, res) => {
     if (!myValidatorKeys) {
       return res.status(400).json({ error: 'This node has no validator keys configured (VALIDATOR_INDEX not set)' });
     }
 
     const now = Date.now();
-    const timeIntoSlot = now % blockchain.slotDurationMs;
 
-    if (timeIntoSlot < blockchain.slotWaitMs) {
-      const remaining = blockchain.slotWaitMs - timeIntoSlot;
+    const waitRemaining = blockchain.getSlotWaitRemaining(now);
+    if (waitRemaining > 0) {
       return res.status(429).json({
-        error: `Must wait ${blockchain.slotWaitMs}ms within the slot before proposing. ${remaining}ms remaining.`,
-        timeIntoSlot,
+        error: `Must wait ${blockchain.slotWaitMs}ms within the slot before proposing. ${waitRemaining}ms remaining.`,
+        timeIntoSlot: blockchain.getTimeIntoSlot(now),
       });
     }
 
     const latest = blockchain.getLatestBlock();
     const nextIndex = latest.index + 1;
-    const currentSlot = Math.floor(now / blockchain.slotDurationMs);
-    const previousSlot = Math.floor(latest.timestamp / blockchain.slotDurationMs);
+    const currentSlot = blockchain.getSlot(now);
 
-    if (currentSlot <= previousSlot) {
+    if (currentSlot <= blockchain.getSlot(latest.timestamp)) {
       return res.status(409).json({
         error: 'The current time slot has already been used by an earlier block — wait for the next slot',
         currentSlot,

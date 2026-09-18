@@ -99,21 +99,17 @@ startApi(blockchain, p2p, API_PORT, myKeys);
 // immediate proposal during testing/demos.
 // --- Automatic block proposal -----------------------------------------
 if (myKeys) {
-  const POLL_INTERVAL_MS = Math.max(250, Math.floor(BLOCK_TIMEOUT_MS / 10));
+  const POLL_INTERVAL_MS = Math.max(250, Math.floor(blockchain.slotDurationMs / 10));
 
   setInterval(() => {
-    if (blockchain.pendingTransactions.length === 0) return;
+    if (blockchain.pendingTransactions.length === 0) return; // nothing to propose
 
     const now = Date.now();
-    const currentSlot = Math.floor(now / blockchain.slotDurationMs);
+    if (blockchain.getSlotWaitRemaining(now) > 0) return; // still in the wait period
 
-    const timeIntoSlot = now % blockchain.slotDurationMs;
-    if (timeIntoSlot < blockchain.slotWaitMs) return; // still in the wait period
-
+    const currentSlot = blockchain.getSlot(now);
     const latest = blockchain.getLatestBlock();
-    const previousSlot = Math.floor(latest.timestamp / BLOCK_TIMEOUT_MS);
-
-    if (currentSlot <= previousSlot) return; // slot already used
+    if (currentSlot <= blockchain.getSlot(latest.timestamp)) return; // slot already used
 
     const owner = validatorSet.getValidatorForSlot(currentSlot);
     if (owner !== myKeys!.publicKey) return; // not my slot

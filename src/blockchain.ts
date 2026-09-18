@@ -72,7 +72,25 @@ export class Blockchain {
     return `${tx.from}-${tx.to}-${tx.amount}-${tx.timestamp}`;
   }
 
+    /** Slot number that contains the given wall-clock timestamp (ms). */
+  getSlot(timestampMs: number): number {
+    return Math.floor(timestampMs / this.slotDurationMs);
+  }
 
+  /** Wall-clock start (ms) of the slot containing the timestamp. */
+  getSlotStart(timestampMs: number): number {
+    return this.getSlot(timestampMs) * this.slotDurationMs;
+  }
+
+  /** How far into its slot the timestamp falls, in ms. */
+  getTimeIntoSlot(timestampMs: number): number {
+    return timestampMs - this.getSlotStart(timestampMs);
+  }
+
+  /** ms left of the mandatory wait period at this moment (0 if it's over). */
+  getSlotWaitRemaining(timestampMs: number): number {
+    return Math.max(0, this.slotWaitMs - this.getTimeIntoSlot(timestampMs));
+  }
 
   /**
    * The core validation rules for PoA. A block is only valid if:
@@ -100,17 +118,15 @@ export class Blockchain {
     // previous block — so a slot's owner never depends on whether any
     // earlier slot was actually used. Each slot can only be claimed once;
     // a block must land in a strictly later slot than the one before it.
-    const slotMs = this.slotDurationMs;
-    const blockSlot = Math.floor(block.timestamp / slotMs);
-    const previousSlot = Math.floor(previousBlock.timestamp / slotMs);
-     const slotStartTime = blockSlot * slotMs;
+    const blockSlot = this.getSlot(block.timestamp);
+    const previousSlot = this.getSlot(previousBlock.timestamp);
 
     if (blockSlot <= previousSlot) {
       return { valid: false, reason: 'block timestamp falls in an already-used or past time slot' };
     }
- 
+
     // Reject block if it was produced before the mandatory wait time into its slot
-    if (block.timestamp - slotStartTime < this.slotWaitMs) {
+    if (this.getTimeIntoSlot(block.timestamp) < this.slotWaitMs) {
       return { valid: false, reason: `block was proposed before the ${this.slotWaitMs}ms slot wait time` };
     }
 

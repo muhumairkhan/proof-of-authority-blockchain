@@ -20,8 +20,13 @@ export class ValidatorSet {
    * or liveness-checking needed anywhere.
    */
   getValidatorForSlot(slot: number): string {
+    return this.validators[this.getIndexForSlot(slot)];
+  }
+
+  /** Index (into the rotation order) of the validator who owns a slot. */
+  getIndexForSlot(slot: number): number {
     const n = this.validators.length;
-    return this.validators[((slot % n) + n) % n]; // defensive mod for any negative slot
+    return ((slot % n) + n) % n; // defensive mod for any negative slot
   }
 
   isKnownValidator(publicKey: string): boolean {
