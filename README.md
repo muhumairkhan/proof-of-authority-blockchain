@@ -154,8 +154,7 @@ stops all spawned nodes together.
   signature proves who authorized it.
 - **`validatorSet.ts`**: the entire authority mechanism is just
   `validators[blockIndex % validators.length]`. This is the simplest
-  possible leader-selection rule, ahead of adding weighted/random selection
-  (PoS) later.
+  possible leader-selection rule.
 - **`blockchain.ts` → `isValidNewBlock`**: this is the actual consensus rule
   set. Every node runs the exact same checks, which is what lets independent
   nodes agree without trusting each other directly — they trust the _rules_.
