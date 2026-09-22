@@ -102,17 +102,35 @@ if (myKeys) {
   const POLL_INTERVAL_MS = Math.max(250, Math.floor(blockchain.slotDurationMs / 10));
 
   setInterval(() => {
-    if (blockchain.pendingTransactions.length === 0) return; // nothing to propose
-
     const now = Date.now();
-    if (blockchain.getSlotWaitRemaining(now) > 0) return; // still in the wait period
-
     const currentSlot = blockchain.getSlot(now);
+
+    if (blockchain.pendingTransactions.length === 0) {
+      //console.debug(`[auto-propose] tick: mempool empty, nothing to propose (slot ${currentSlot})`);
+      return; // nothing to propose
+    }
+
+    const waitRemaining = blockchain.getSlotWaitRemaining(now);
+    if (waitRemaining > 0) {
+      console.debug(`[auto-propose] tick: still in slot wait period, ${waitRemaining}ms remaining (slot ${currentSlot})`);
+      return; // still in the wait period
+    }
+
     const latest = blockchain.getLatestBlock();
-    if (currentSlot <= blockchain.getSlot(latest.timestamp)) return; // slot already used
+    const latestSlot = blockchain.getSlot(latest.timestamp);
+    if (currentSlot <= latestSlot) {
+      console.debug(`[auto-propose] tick: slot ${currentSlot} already used (latest block #${latest.index} is in slot ${latestSlot})`);
+      return; // slot already used
+    }
 
     const owner = validatorSet.getValidatorForSlot(currentSlot);
-    if (owner !== myKeys!.publicKey) return; // not my slot
+    if (owner !== myKeys!.publicKey) {
+      const ownerIndex = validatorSet.getAll().indexOf(owner);
+      console.debug(`[auto-propose] tick: slot ${currentSlot} belongs to validator #${ownerIndex}, not me (#${VALIDATOR_INDEX})`);
+      return; // not my slot
+    }
+
+    console.log(`[auto-propose] my slot (${currentSlot}) — proposing block #${latest.index + 1} with ${blockchain.pendingTransactions.length} pending tx`);
 
     const block = Block.proposeBlock(
       {
@@ -125,12 +143,17 @@ if (myKeys) {
       myKeys!.privateKey
     );
 
+    console.debug(`[auto-propose] block #${block.index} built, hash ${block.hash.slice(0, 10)}... — submitting to local chain`);
+
     const result = blockchain.addBlock(block);
     if (result.success) {
       console.log(`[auto-propose] Proposed block #${block.index} as validator #${VALIDATOR_INDEX} for slot ${currentSlot}`);
       p2p.broadcastNewBlock(block);
+      console.debug(`[auto-propose] block #${block.index} broadcast to peers`);
     } else if (!result.alreadyHave) {
       console.warn(`[auto-propose] Attempt for block #${latest.index + 1} rejected locally: ${result.reason}`);
+    } else {
+      console.debug(`[auto-propose] block #${latest.index + 1} already present locally, skipping broadcast`);
     }
   }, POLL_INTERVAL_MS);
 
