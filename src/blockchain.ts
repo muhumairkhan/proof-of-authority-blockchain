@@ -164,12 +164,22 @@ export class Blockchain {
     return { success: true };
   }
 
-    /** Validates an entire candidate chain (e.g. one received from a peer). */
+  /** Validates an entire candidate chain (e.g. one received from a peer). */
   isChainValid(rawChain: any[]): boolean {
     if (!Array.isArray(rawChain) || rawChain.length === 0) return false;
 
     const chain = rawChain.map((b) => Block.fromPlain(b));
-    if (chain[0].index !== 0) return false; // must start at genesis
+
+    // Must start at the exact same genesis block as our own chain — not just
+    // "any block claiming index 0". A peer could otherwise hand us a chain
+    // rooted in a completely different genesis (different transactions,
+    // different timestamp, different validator set encoded downstream) and,
+    // as long as it's internally consistent from block 1 onward, nothing
+    // here would catch it.
+    const expectedGenesisHash = Block.createGenesisBlock().hash;
+    if (chain[0].index !== 0 || chain[0].hash !== expectedGenesisHash) {
+      return false;
+    }
 
     for (let i = 1; i < chain.length; i++) {
       const check = this.isValidNewBlock(chain[i], chain[i - 1]);
