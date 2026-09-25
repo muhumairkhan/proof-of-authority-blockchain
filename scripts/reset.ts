@@ -1,4 +1,4 @@
-import { rmSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import 'dotenv/config';
 
@@ -10,7 +10,7 @@ const TEST_WALLET_NAME = 'test';
 const TEST_WALLET_PASSPHRASE = process.env.TEST_WALLET_PASSPHRASE || 'test-wallet-passphrase';
 const TEST_WALLET_FUNDS = Number(process.env.TEST_WALLET_FUNDS || 1000);
 
-for (const path of ['keys', 'data', 'wallets', 'genesis.json']) {
+for (const path of ['keys', 'data', 'wallets']) {
   if (existsSync(path)) {
     rmSync(path, { recursive: true, force: true });
     console.log(`[reset] Removed ${path}`);
@@ -31,8 +31,14 @@ execSync(`npm run wallet -- create ${TEST_WALLET_NAME}`, {
 const wallet = JSON.parse(readFileSync(`wallets/${TEST_WALLET_NAME}.json`, 'utf-8')) as { address: string };
 
 const genesis = { [wallet.address]: TEST_WALLET_FUNDS };
-writeFileSync('genesis.json', JSON.stringify(genesis, null, 2));
-console.log(`[reset] Wrote genesis.json — ${wallet.address} funded with ${TEST_WALLET_FUNDS}`);
+
+// make sure data/ dir exists for genesis.json to write
+if (!existsSync('data')) {
+  mkdirSync('data');
+}
+
+writeFileSync('data/genesis.json', JSON.stringify(genesis, null, 2));
+console.log(`[reset] Wrote data/genesis.json — ${wallet.address} funded with ${TEST_WALLET_FUNDS}`);
 console.log(`[reset] Test wallet passphrase: ${TEST_WALLET_PASSPHRASE} (override with TEST_WALLET_PASSPHRASE env var)`);
 
 console.log('[reset] Done.');

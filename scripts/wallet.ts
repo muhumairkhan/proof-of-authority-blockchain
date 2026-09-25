@@ -117,6 +117,8 @@ async function main() {
       const acctRes = await fetch(`${NODE_URL}/accounts/${wallet.address}`);
       const acct = (await acctRes.json()) as { nextNonce: number };
 
+      console.log(acct);
+
       const tx = createSignedTransaction(
         {
           from: wallet.address,

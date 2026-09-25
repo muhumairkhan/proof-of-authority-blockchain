@@ -73,8 +73,8 @@ if (VALIDATOR_INDEX !== undefined) {
   console.log('[node] Running as a non-validating full node');
 }
 
-const genesisAllocations = existsSync('genesis.json')
-  ? JSON.parse(readFileSync('genesis.json', 'utf-8'))
+const genesisAllocations = existsSync('data/genesis.json')
+  ? JSON.parse(readFileSync('data/genesis.json', 'utf-8'))
   : {};
 
 const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS, SLOT_WAIT_MS, genesisAllocations);
