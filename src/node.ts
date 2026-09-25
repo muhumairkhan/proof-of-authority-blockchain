@@ -73,7 +73,11 @@ if (VALIDATOR_INDEX !== undefined) {
   console.log('[node] Running as a non-validating full node');
 }
 
-const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS, SLOT_WAIT_MS);
+const genesisAllocations = existsSync('genesis.json')
+  ? JSON.parse(readFileSync('genesis.json', 'utf-8'))
+  : {};
+
+const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS, SLOT_WAIT_MS, genesisAllocations);
 const p2p = new P2PNode(blockchain, P2P_PORT);
 p2p.start();
 
@@ -130,13 +134,16 @@ if (myKeys) {
       return; // not my slot
     }
 
-    console.log(`[auto-propose] my slot (${currentSlot}) — proposing block #${latest.index + 1} with ${blockchain.pendingTransactions.length} pending tx`);
+    const txs = blockchain.selectTransactionsForBlock();
+    if (txs.length === 0) return; // nothing valid to propose
+
+    console.log(`[auto-propose] my slot (${currentSlot}) — proposing block #${latest.index + 1} with ${txs.length} pending tx`);
 
     const block = Block.proposeBlock(
       {
         index: latest.index + 1,
         timestamp: now,
-        transactions: blockchain.pendingTransactions,
+        transactions: txs,
         previousHash: latest.hash,
         validatorPublicKey: myKeys!.publicKey,
       },
