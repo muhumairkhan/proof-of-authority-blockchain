@@ -159,8 +159,8 @@ export class P2PNode {
       }
 
       case 'NEW_TRANSACTION': {
-        const added = this.blockchain.addTransaction(message.transaction);
-        if (added) {
+        const result = this.blockchain.addTransaction(message.transaction);
+        if (result.added) {
           this.broadcast({ type: 'NEW_TRANSACTION', transaction: message.transaction }, socket);
         }
         break;

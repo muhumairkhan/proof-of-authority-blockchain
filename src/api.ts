@@ -28,6 +28,10 @@ export function startApi(
     res.json(blockchain.pendingTransactions);
   });
 
+  app.get('/accounts/:address', (req, res) => {
+    res.json(blockchain.getAccount(req.params.address));
+  });
+
   app.get('/status', (_req, res) => {
     const latest = blockchain.getLatestBlock();
     const now = Date.now();
@@ -50,20 +54,32 @@ export function startApi(
       nextProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot + 1),
     });
   });
-  
+
+  // Accepts a fully SIGNED transaction (build one with `npm run wallet -- send ...`).
   app.post('/transactions', (req, res) => {
-    const { from, to, amount } = req.body;
-    if (typeof from !== 'string' || typeof to !== 'string' || typeof amount !== 'number') {
-      return res.status(400).json({ error: 'Expected { from: string, to: string, amount: number }' });
+    const b = req.body ?? {};
+    // Copy only the known fields so nothing extra gets gossiped or stored.
+    const tx: Transaction = {
+      from: b.from,
+      to: b.to,
+      amount: b.amount,
+      nonce: b.nonce,
+      timestamp: b.timestamp,
+      publicKey: b.publicKey,
+      signature: b.signature,
+      hash: b.hash,
+    };
+
+    const result = blockchain.addTransaction(tx);
+    if (!result.added) {
+      return res.status(400).json({ error: result.reason });
     }
-    const tx: Transaction = { from, to, amount, timestamp: Date.now() };
-    blockchain.addTransaction(tx);
     p2p.broadcastTransaction(tx);
     res.json({ success: true, transaction: tx });
   });
 
   // Manually trigger this node to propose the next block, if it's actually its turn.
-    app.post('/propose', (_req, res) => {
+  app.post('/propose', (_req, res) => {
     if (!myValidatorKeys) {
       return res.status(400).json({ error: 'This node has no validator keys configured (VALIDATOR_INDEX not set)' });
     }
@@ -99,11 +115,16 @@ export function startApi(
       });
     }
 
+    const transactions = blockchain.selectTransactionsForBlock();
+    if (transactions.length === 0) {
+      return res.status(400).json({ error: 'No valid pending transactions to include' });
+    }
+
     const block = Block.proposeBlock(
       {
         index: nextIndex,
         timestamp: now,
-        transactions: blockchain.pendingTransactions,
+        transactions,
         previousHash: latest.hash,
         validatorPublicKey: myValidatorKeys.publicKey,
       },
