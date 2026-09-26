@@ -142,29 +142,12 @@ stops all spawned nodes together.
    curl http://localhost:3000/status
    ```
 
-## Design notes
+**Testing Wallets and Balance**:
+WALLET_PASSPHRASE=wp npm run wallet -- create alice
+WALLET_PASSPHRASE=wp npm run wallet -- create bob
 
-- **`crypto.ts`**: validator private keys are never written to disk in
-  plaintext. Each key file stores an `EncryptedPrivateKey` blob — a
-  passphrase-derived AES-256-GCM key (via scrypt) encrypts the PEM, and the
-  GCM auth tag makes decryption fail loudly (rather than silently producing
-  garbage) if the passphrase is wrong or the file was tampered with.
-- **`block.ts`**: separates a block's _content hash_ from its _validator
-  signature_. The hash proves the content wasn't tampered with; the
-  signature proves who authorized it.
-- **`validatorSet.ts`**: the entire authority mechanism is just
-  `validators[blockIndex % validators.length]`. This is the simplest
-  possible leader-selection rule.
-- **`blockchain.ts` → `isValidNewBlock`**: this is the actual consensus rule
-  set. Every node runs the exact same checks, which is what lets independent
-  nodes agree without trusting each other directly — they trust the _rules_.
-- **`storage.ts`**: each node persists its chain and pending transactions
-  to `data/chain-<p2p-port>.json` after every mutation, writing to a temp
-  file and renaming into place so a crash mid-write can't corrupt the data
-  file. On startup, a node restores from this file if present instead of
-  starting from genesis.
-- **`p2p.ts`**: implements the two things every blockchain network needs —
-  gossip (propagate new data to everyone) and chain sync (resolve
-  disagreements using the longest-valid-chain rule). This is where the
-  more interesting edge cases live (e.g. what happens if two blocks arrive
-  out of order).
+# put alice's address into genesis.json as {"0x...": 1000}
+
+VALIDATOR_KEY_PASSPHRASE=... npm start -- reset # wipes keys and data
+WALLET_PASSPHRASE=wp npm run wallet -- send alice bob 10
+npm run wallet -- balance bob

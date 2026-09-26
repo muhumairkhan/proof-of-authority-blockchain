@@ -108,3 +108,7 @@ export function decryptPrivateKey(enc: EncryptedPrivateKey, passphrase: string):
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return plaintext.toString('utf-8');
 }
+
+export function addressFromPublicKey(publicKeyPem: string): string {
+  return '0x' + sha256(publicKeyPem).slice(-40);
+}

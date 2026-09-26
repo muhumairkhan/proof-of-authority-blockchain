@@ -2,30 +2,36 @@ import { Block } from './block';
 import { ValidatorSet } from './validatorSet';
 import { Transaction } from './types';
 import { loadSnapshot, saveSnapshot } from './storage';
+import { WorldState, GenesisAllocations } from './state';
+import { verifyTransaction } from './transaction';
+
+type ChainValidation =
+  | { ok: true; chain: Block[]; state: WorldState }
+  | { ok: false; reason: string };
 
 export class Blockchain {
   chain: Block[];
   validatorSet: ValidatorSet;
   pendingTransactions: Transaction[] = [];
   private dataFile?: string;
+  private genesisAllocations: GenesisAllocations;
 
-  // Fixed width of a time slot in ms. Slot ownership cycles through the
-  // validator set based purely on wall-clock time (see
-  // ValidatorSet.getValidatorForSlot) — this value MUST be identical on
-  // every node, or nodes will compute different slot numbers for the same
-  // moment and reject each other's blocks.
+  // Balances + nonces, derived from the chain. Kept in memory only.
+  private state: WorldState;
+
+  // Fixed width of a time slot in ms. Must be identical on every node.
   slotDurationMs: number;
 
   // Minimum time a validator must wait after a slot begins before it may
-  // propose in it. Part of the consensus rules: MUST be identical on every
-  // node, same as slotDurationMs.
+  // propose in it. Must be identical on every node.
   slotWaitMs: number;
 
   constructor(
     validatorSet: ValidatorSet,
     dataFile?: string,
     slotDurationMs = 15000,
-    slotWaitMs = 3000
+    slotWaitMs = 3000,
+    genesisAllocations: GenesisAllocations = {}
   ) {
     if (slotWaitMs < 0 || slotWaitMs >= slotDurationMs) {
       throw new Error(
@@ -37,14 +43,22 @@ export class Blockchain {
     this.dataFile = dataFile;
     this.slotDurationMs = slotDurationMs;
     this.slotWaitMs = slotWaitMs;
+    this.genesisAllocations = genesisAllocations;
 
     const snapshot = dataFile ? loadSnapshot(dataFile) : null;
-    if (snapshot) {
-      this.chain = snapshot.chain.map((b) => Block.fromPlain(b));
+    const restored = snapshot ? this.validateChain(snapshot.chain) : null;
+
+    if (snapshot && restored && restored.ok) {
+      this.chain = restored.chain;
+      this.state = restored.state;
       this.pendingTransactions = snapshot.pendingTransactions;
       console.log(`[storage] Restored ${this.chain.length} blocks (${this.pendingTransactions.length} pending tx) from ${dataFile}`);
     } else {
+      if (snapshot && restored && !restored.ok) {
+        console.warn(`[storage] Saved chain failed replay (${restored.reason}) — starting from genesis. Run \`npm run reset\` if this is old-format data.`);
+      }
       this.chain = [Block.createGenesisBlock()];
+      this.state = new WorldState(genesisAllocations);
     }
   }
 
@@ -57,48 +71,94 @@ export class Blockchain {
     return this.chain[this.chain.length - 1];
   }
 
-  /** Returns false (no-op) if this transaction is already pending. */
-  addTransaction(tx: Transaction): boolean {
-    const key = this.txKey(tx);
-    const alreadyPending = this.pendingTransactions.some((t) => this.txKey(t) === key);
-    if (alreadyPending) return false;
+  // --- Accounts ----------------------------------------------------------
+
+  getAccount(address: string) {
+    return {
+      address,
+      balance: this.state.getBalance(address),
+      nonce: this.state.getNonce(address),
+      nextNonce: this.getNextNonce(address),
+    };
+  }
+
+  /** Confirmed nonce + any contiguous pending txs, so a wallet can send several in a row. */
+  getNextNonce(address: string): number {
+    let next = this.state.getNonce(address);
+    while (this.pendingTransactions.some((t) => t.from === address && t.nonce === next)) {
+      next++;
+    }
+    return next;
+  }
+
+  // --- Mempool -----------------------------------------------------------
+
+  addTransaction(tx: Transaction): { added: boolean; reason?: string } {
+    const check = verifyTransaction(tx);
+    if (!check.valid) return { added: false, reason: check.reason };
+
+    if (this.pendingTransactions.some((t) => t.hash === tx.hash)) {
+      return { added: false, reason: 'duplicate transaction' };
+    }
+    if (tx.nonce < this.state.getNonce(tx.from)) {
+      return { added: false, reason: 'nonce already used' };
+    }
+    if (this.pendingTransactions.some((t) => t.from === tx.from && t.nonce === tx.nonce)) {
+      return { added: false, reason: 'another pending tx from this sender already uses this nonce' };
+    }
+    if (this.state.getBalance(tx.from) < tx.amount) {
+      return { added: false, reason: 'insufficient balance' };
+    }
 
     this.pendingTransactions.push(tx);
     this.persist();
-    return true;
+    return { added: true };
   }
 
-  private txKey(tx: Transaction): string {
-    return `${tx.from}-${tx.to}-${tx.amount}-${tx.timestamp}`;
+  /**
+   * Picks the mempool txs that would actually be valid in the next block,
+   * in an order that respects each sender's nonce sequence.
+   */
+  selectTransactionsForBlock(): Transaction[] {
+    const sim = this.state.clone();
+    const sorted = [...this.pendingTransactions].sort(
+      (a, b) => a.nonce - b.nonce || a.timestamp - b.timestamp
+    );
+    const selected: Transaction[] = [];
+    for (const tx of sorted) {
+      if (sim.applyAll([tx]).ok) selected.push(tx);
+    }
+    return selected;
   }
 
-    /** Slot number that contains the given wall-clock timestamp (ms). */
+  /** Drops txs whose nonce has already been consumed on-chain. */
+  private pruneMempool() {
+    this.pendingTransactions = this.pendingTransactions.filter(
+      (t) => t.nonce >= this.state.getNonce(t.from)
+    );
+  }
+
+  // --- Slots -------------------------------------------------------------
+
   getSlot(timestampMs: number): number {
     return Math.floor(timestampMs / this.slotDurationMs);
   }
 
-  /** Wall-clock start (ms) of the slot containing the timestamp. */
   getSlotStart(timestampMs: number): number {
     return this.getSlot(timestampMs) * this.slotDurationMs;
   }
 
-  /** How far into its slot the timestamp falls, in ms. */
   getTimeIntoSlot(timestampMs: number): number {
     return timestampMs - this.getSlotStart(timestampMs);
   }
 
-  /** ms left of the mandatory wait period at this moment (0 if it's over). */
   getSlotWaitRemaining(timestampMs: number): number {
     return Math.max(0, this.slotWaitMs - this.getTimeIntoSlot(timestampMs));
   }
 
-  /**
-   * The core validation rules for PoA. A block is only valid if:
-   *  1. It correctly extends the previous block (index + previousHash line up)
-   *  2. Its hash actually matches its content (no tampering)
-   *  3. It's signed by a validator, and that signature is valid
-   *  4. It's signed by the SPECIFIC validator who owns the current time slot
-   */
+  // --- Validation --------------------------------------------------------
+
+  /** Structural PoA rules (linkage, hash, signature, slot ownership). Does NOT look at transactions. */
   isValidNewBlock(block: Block, previousBlock: Block): { valid: boolean; reason?: string } {
     if (block.index !== previousBlock.index + 1) {
       return { valid: false, reason: `Bad index: expected ${previousBlock.index + 1}, got ${block.index}` };
@@ -113,11 +173,6 @@ export class Blockchain {
       return { valid: false, reason: 'invalid validator signature' };
     }
 
-    // Slots are fixed-width time buckets measured from a shared, fixed
-    // origin (see ValidatorSet.getValidatorForSlot) — not from the
-    // previous block — so a slot's owner never depends on whether any
-    // earlier slot was actually used. Each slot can only be claimed once;
-    // a block must land in a strictly later slot than the one before it.
     const blockSlot = this.getSlot(block.timestamp);
     const previousSlot = this.getSlot(previousBlock.timestamp);
 
@@ -125,7 +180,6 @@ export class Blockchain {
       return { valid: false, reason: 'block timestamp falls in an already-used or past time slot' };
     }
 
-    // Reject block if it was produced before the mandatory wait time into its slot
     if (this.getTimeIntoSlot(block.timestamp) < this.slotWaitMs) {
       return { valid: false, reason: `block was proposed before the ${this.slotWaitMs}ms slot wait time` };
     }
@@ -138,12 +192,22 @@ export class Blockchain {
     return { valid: true };
   }
 
+  /** Verifies every tx signature in the block, then applies them to `state` atomically. */
+  private applyBlockTransactions(block: Block, state: WorldState): { ok: boolean; reason?: string } {
+    if (!Array.isArray(block.transactions)) return { ok: false, reason: 'block.transactions is not an array' };
+
+    for (const tx of block.transactions) {
+      const check = verifyTransaction(tx);
+      if (!check.valid) return { ok: false, reason: `invalid transaction in block: ${check.reason}` };
+    }
+    const result = state.applyAll(block.transactions);
+    return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+  }
 
   addBlock(rawBlock: any): { success: boolean; reason?: string; alreadyHave?: boolean } {
     const block = rawBlock instanceof Block ? rawBlock : Block.fromPlain(rawBlock);
     const latest = this.getLatestBlock();
 
-    // Duplicate delivery from mesh flooding — not an error, just skip.
     if (block.index <= latest.index) {
       return { success: false, reason: 'already have this block or an equal/later one', alreadyHave: true };
     }
@@ -151,52 +215,62 @@ export class Blockchain {
     const check = this.isValidNewBlock(block, latest);
     if (!check.valid) return { success: false, reason: check.reason };
 
+    // applyAll is atomic, so a rejected block leaves this.state untouched.
+    const txResult = this.applyBlockTransactions(block, this.state);
+    if (!txResult.ok) return { success: false, reason: txResult.reason };
+
     this.chain.push(block);
-
-    const includedKeys = new Set(
-      block.transactions.map((t) => `${t.from}-${t.to}-${t.amount}-${t.timestamp}`)
-    );
-    this.pendingTransactions = this.pendingTransactions.filter(
-      (t) => !includedKeys.has(`${t.from}-${t.to}-${t.amount}-${t.timestamp}`)
-    );
-
+    this.pruneMempool();
     this.persist();
     return { success: true };
   }
 
-  /** Validates an entire candidate chain (e.g. one received from a peer). */
-  isChainValid(rawChain: any[]): boolean {
-    if (!Array.isArray(rawChain) || rawChain.length === 0) return false;
+  /** Replays a whole candidate chain from genesis, returning the resulting state if valid. */
+  validateChain(rawChain: any[]): ChainValidation {
+    if (!Array.isArray(rawChain) || rawChain.length === 0) {
+      return { ok: false, reason: 'empty or non-array chain' };
+    }
 
-    const chain = rawChain.map((b) => Block.fromPlain(b));
+    let chain: Block[];
+    try {
+      chain = rawChain.map((b) => Block.fromPlain(b));
+    } catch {
+      return { ok: false, reason: 'malformed block in chain' };
+    }
 
-    // Must start at the exact same genesis block as our own chain — not just
-    // "any block claiming index 0". A peer could otherwise hand us a chain
-    // rooted in a completely different genesis (different transactions,
-    // different timestamp, different validator set encoded downstream) and,
-    // as long as it's internally consistent from block 1 onward, nothing
-    // here would catch it.
+    // Must be rooted in the exact same genesis block as ours.
     const expectedGenesisHash = Block.createGenesisBlock().hash;
     if (chain[0].index !== 0 || chain[0].hash !== expectedGenesisHash) {
-      return false;
+      return { ok: false, reason: 'different genesis block' };
     }
 
+    const state = new WorldState(this.genesisAllocations);
     for (let i = 1; i < chain.length; i++) {
       const check = this.isValidNewBlock(chain[i], chain[i - 1]);
-      if (!check.valid) return false;
+      if (!check.valid) return { ok: false, reason: `block #${i}: ${check.reason}` };
+
+      const txResult = this.applyBlockTransactions(chain[i], state);
+      if (!txResult.ok) return { ok: false, reason: `block #${i}: ${txResult.reason}` };
     }
-    return true;
+    return { ok: true, chain, state };
   }
 
+  isChainValid(rawChain: any[]): boolean {
+    return this.validateChain(rawChain).ok;
+  }
 
   replaceChain(rawChain: any[]): { replaced: boolean; reason?: string } {
     if (!Array.isArray(rawChain) || rawChain.length <= this.chain.length) {
       return { replaced: false, reason: 'received chain is not longer than current chain' };
     }
-    if (!this.isChainValid(rawChain)) {
-      return { replaced: false, reason: 'received chain failed validation' };
+    const result = this.validateChain(rawChain);
+    if (!result.ok) {
+      return { replaced: false, reason: `received chain failed validation: ${result.reason}` };
     }
-    this.chain = rawChain.map((b) => Block.fromPlain(b));
+
+    this.chain = result.chain;
+    this.state = result.state;
+    this.pruneMempool();
     this.persist();
     return { replaced: true };
   }
