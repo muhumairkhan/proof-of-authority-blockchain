@@ -5,6 +5,8 @@ import { Block } from './block';
 import { Transaction } from './types';
 import { KeyPair } from './crypto';
 import cors from 'cors';
+import fs from 'fs';
+import path from 'path';
 
 export function startApi(
   blockchain: Blockchain,
@@ -21,7 +23,32 @@ export function startApi(
   });
 
   app.get('/validators', (_req, res) => {
-    res.json(blockchain.validatorSet.getAll());
+    try {
+      const keysDir = path.join(__dirname, '../keys'); 
+      
+      // Read all files inside the keys/ directory
+      const files = fs.readdirSync(keysDir);
+      
+      // Filter for files that match the 'validator-*.json' pattern
+      const validatorFiles = files.filter(file => file.startsWith('validator-') && file.endsWith('.json'));
+      
+      // Iterate over files, parse them, and strip the private key
+      const validatorsResponse = validatorFiles.map(file => {
+        const filePath = path.join(keysDir, file);
+        const fileContent = fs.readFileSync(filePath, 'utf-8');
+        
+        // Destructure to extract and omit encryptedPrivateKey
+        const { encryptedPrivateKey, ...publicValidatorData } = JSON.parse(fileContent);
+        
+        return publicValidatorData;
+      });
+
+      res.json(validatorsResponse);
+      
+    } catch (error) {
+      console.error('Error reading validator files:', error);
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
   });
 
   app.get('/pending', (_req, res) => {
