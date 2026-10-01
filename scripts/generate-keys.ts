@@ -1,15 +1,18 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
-import { generateValidatorKeyPair, encryptPrivateKey } from '../src/crypto';
+import { createKeystore } from '../src/crypto';
 import 'dotenv/config';
 
 // Configurable so `reset`/`start` can agree on how many validators to spin up,
 // e.g. NUM_VALIDATORS=5 npm run reset
 const NUM_VALIDATORS = Number(process.env.NUM_VALIDATORS || 1);
 
-// Private keys are encrypted at rest with AES-256-GCM using a key derived
-// from this passphrase (scrypt). It is never written to disk itself — you
-// supply it again whenever a validator node starts up, so losing it means
-// losing access to that validator's signing key.
+// Private keys are encrypted at rest (AES-256-GCM, key derived from this
+// passphrase via PBKDF2). The passphrase itself is never written to disk —
+// you supply it again whenever a validator node starts up, so losing it
+// means losing access to that validator's signing key.
+//
+// The keystore format is identical to the frontend wallet's, so these files
+// can be imported there too.
 const passphrase = process.env.VALIDATOR_KEY_PASSPHRASE;
 if (!passphrase) {
   console.error(
@@ -28,21 +31,13 @@ if (!existsSync('keys')) {
 const publicKeys: string[] = [];
 
 for (let i = 0; i < NUM_VALIDATORS; i++) {
-  const { publicKey, privateKey } = generateValidatorKeyPair();
-  const encryptedPrivateKey = encryptPrivateKey(privateKey, passphrase);
-
-  // Note: no plaintext privateKey field — only the public key (safe to
-  // share) and the encrypted blob are ever persisted.
-  writeFileSync(
-    `keys/validator-${i}.json`,
-    JSON.stringify({ publicKey, encryptedPrivateKey }, null, 2)
-  );
-  publicKeys.push(publicKey);
-  console.log(`Generated keys/validator-${i}.json (private key encrypted at rest)`);
+  const ks = createKeystore(passphrase, `validator-${i}`);
+  writeFileSync(`keys/validator-${i}.json`, JSON.stringify(ks, null, 2));
+  publicKeys.push(ks.publicKey);
+  console.log(`Generated keys/validator-${i}.json (${ks.address}, private key encrypted at rest)`);
 }
 
-// The rotation order every node needs to agree on who signs block N.
-// Public keys only — safe to distribute/commit if you really want to,
-// though keys/ is gitignored by default.
+// The rotation order every node needs to agree on who signs which slot.
+// Public keys only — safe to distribute.
 writeFileSync('keys/validators-public.json', JSON.stringify(publicKeys, null, 2));
 console.log(`Wrote keys/validators-public.json (${NUM_VALIDATORS} validators, shared rotation order for all nodes)`);

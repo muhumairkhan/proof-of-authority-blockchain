@@ -1,6 +1,8 @@
 import { sha256, sign, verify, addressFromPublicKey } from './crypto';
 import { Transaction, UnsignedTransaction } from './types';
 
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
 /** Hash of exactly the fields the sender commits to. Also serves as the tx id. */
 export function computeTxHash(tx: UnsignedTransaction): string {
   return sha256(
@@ -42,6 +44,9 @@ export function verifyTransaction(tx: any): { valid: boolean; reason?: string } 
   ) {
     return { valid: false, reason: 'malformed transaction fields' };
   }
+  if (!ADDRESS_RE.test(from)) return { valid: false, reason: 'invalid sender address' };
+  if (!ADDRESS_RE.test(to)) return { valid: false, reason: 'invalid recipient address' };
+
   if (!Number.isSafeInteger(amount) || amount <= 0) {
     return { valid: false, reason: 'amount must be a positive integer' };
   }
@@ -53,7 +58,15 @@ export function verifyTransaction(tx: any): { valid: boolean; reason?: string } 
   }
   if (from === to) return { valid: false, reason: 'cannot send to self' };
 
-  if (addressFromPublicKey(publicKey) !== from) {
+  // addressFromPublicKey throws on garbage / non-secp256k1 keys. This runs on
+  // untrusted network data, so it must never crash the node.
+  let derived: string;
+  try {
+    derived = addressFromPublicKey(publicKey);
+  } catch {
+    return { valid: false, reason: 'invalid public key' };
+  }
+  if (derived !== from) {
     return { valid: false, reason: 'publicKey does not match sender address' };
   }
   if (computeTxHash({ from, to, amount, nonce, timestamp }) !== hash) {

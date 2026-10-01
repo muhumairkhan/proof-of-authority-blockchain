@@ -1,36 +1,28 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import {
-  generateValidatorKeyPair,
-  encryptPrivateKey,
-  decryptPrivateKey,
-  addressFromPublicKey,
-  EncryptedPrivateKey,
-} from '../src/crypto';
+import { createKeystore, unlockKeystore, Keystore, KeyPair } from '../src/crypto';
 import { createSignedTransaction } from '../src/transaction';
 import 'dotenv/config';
 
 // Usage:
 //   WALLET_PASSPHRASE=... npm run wallet -- create alice
+//   WALLET_PASSPHRASE=... npm run wallet -- import ./exported-keystore.json alice
 //   npm run wallet -- address alice
 //   npm run wallet -- balance alice            (or a raw 0x... address)
 //   WALLET_PASSPHRASE=... npm run wallet -- send alice bob 10
+//
+// Wallet files use the SAME keystore format as the frontend, so a keystore
+// exported from the frontend can be imported here and vice versa.
 //
 // NODE_URL selects which node's API to talk to (default http://localhost:3000).
 
 const NODE_URL = process.env.NODE_URL || 'http://localhost:3000';
 const WALLET_DIR = 'wallets';
 
-interface StoredWallet {
-  address: string;
-  publicKey: string;
-  encryptedPrivateKey: EncryptedPrivateKey;
-}
-
 function walletPath(name: string) {
   return `${WALLET_DIR}/${name}.json`;
 }
 
-function loadWallet(name: string): StoredWallet {
+function loadWallet(name: string): Keystore {
   const path = walletPath(name);
   if (!existsSync(path)) {
     console.error(`No wallet found at ${path}`);
@@ -41,7 +33,7 @@ function loadWallet(name: string): StoredWallet {
 
 /** Accepts either a raw 0x address or the name of a local wallet. */
 function resolveAddress(nameOrAddress: string): string {
-  if (nameOrAddress.startsWith('0x')) return nameOrAddress;
+  if (nameOrAddress.startsWith('0x')) return nameOrAddress.toLowerCase();
   return loadWallet(nameOrAddress).address;
 }
 
@@ -65,17 +57,54 @@ async function main() {
         console.error(`Wallet "${name}" already exists at ${walletPath(name)}`);
         process.exit(1);
       }
-      const passphrase = requirePassphrase();
-      const { publicKey, privateKey } = generateValidatorKeyPair();
-      const wallet: StoredWallet = {
-        address: addressFromPublicKey(publicKey),
-        publicKey,
-        encryptedPrivateKey: encryptPrivateKey(privateKey, passphrase),
-      };
+      const ks = createKeystore(requirePassphrase(), name);
       if (!existsSync(WALLET_DIR)) mkdirSync(WALLET_DIR);
-      writeFileSync(walletPath(name), JSON.stringify(wallet, null, 2));
+      writeFileSync(walletPath(name), JSON.stringify(ks, null, 2));
       console.log(`Created ${walletPath(name)}`);
-      console.log(`Address: ${wallet.address}`);
+      console.log(`Address: ${ks.address}`);
+      break;
+    }
+
+    case 'import': {
+      const [file, name] = args;
+      if (!file || !name) return usage();
+      if (!existsSync(file)) {
+        console.error(`Keystore file not found: ${file}`);
+        process.exit(1);
+      }
+      if (existsSync(walletPath(name))) {
+        console.error(`Wallet "${name}" already exists at ${walletPath(name)}`);
+        process.exit(1);
+      }
+      let ks: any;
+      try {
+        ks = JSON.parse(readFileSync(file, 'utf-8'));
+      } catch {
+        console.error('Keystore is not valid JSON');
+        process.exit(1);
+      }
+      try {
+        unlockKeystore(ks, requirePassphrase()); // proves passphrase + integrity
+      } catch (e) {
+        console.error(`Import failed: ${(e as Error).message}`);
+        process.exit(1);
+      }
+      if (!existsSync(WALLET_DIR)) mkdirSync(WALLET_DIR);
+      // Keep only the standard fields; store the original encrypted blob untouched.
+      const clean: Keystore = {
+        version: 1,
+        name,
+        address: ks.address,
+        publicKey: ks.publicKey,
+        encryptedPrivateKey: {
+          salt: ks.encryptedPrivateKey.salt,
+          iv: ks.encryptedPrivateKey.iv,
+          ciphertext: ks.encryptedPrivateKey.ciphertext,
+        },
+      };
+      writeFileSync(walletPath(name), JSON.stringify(clean, null, 2));
+      console.log(`Imported as ${walletPath(name)}`);
+      console.log(`Address: ${clean.address}`);
       break;
     }
 
@@ -105,30 +134,36 @@ async function main() {
       }
 
       const wallet = loadWallet(fromName);
-      let privateKey: string;
+      let keys: KeyPair & { address: string };
       try {
-        privateKey = decryptPrivateKey(wallet.encryptedPrivateKey, requirePassphrase());
-      } catch {
-        console.error('Failed to decrypt wallet — wrong WALLET_PASSPHRASE?');
+        keys = unlockKeystore(wallet, requirePassphrase());
+      } catch (e) {
+        console.error(`Failed to unlock wallet: ${(e as Error).message}`);
+        process.exit(1);
+      }
+
+      const to = resolveAddress(toWho);
+      if (!/^0x[0-9a-f]{40}$/.test(to)) {
+        console.error('recipient must be a wallet name or a lowercase 0x + 40 hex address');
         process.exit(1);
       }
 
       // Ask the node for the next usable nonce (counts this account's pending txs too).
-      const acctRes = await fetch(`${NODE_URL}/accounts/${wallet.address}`);
+      const acctRes = await fetch(`${NODE_URL}/accounts/${keys.address}`);
       const acct = (await acctRes.json()) as { nextNonce: number };
 
       console.log(acct);
 
       const tx = createSignedTransaction(
         {
-          from: wallet.address,
-          to: resolveAddress(toWho),
+          from: keys.address,
+          to,
           amount,
           nonce: acct.nextNonce,
           timestamp: Date.now(),
         },
-        wallet.publicKey,
-        privateKey
+        keys.publicKey,
+        keys.privateKey
       );
 
       const res = await fetch(`${NODE_URL}/transactions`, {
@@ -149,6 +184,7 @@ function usage() {
   console.error(
     'Usage:\n' +
     '  npm run wallet -- create <name>\n' +
+    '  npm run wallet -- import <keystore.json> <name>\n' +
     '  npm run wallet -- address <name>\n' +
     '  npm run wallet -- balance <name|0xaddress>\n' +
     '  npm run wallet -- send <fromName> <toName|0xaddress> <amount>'

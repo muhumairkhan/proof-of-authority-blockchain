@@ -6,7 +6,10 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
-  scryptSync,
+  pbkdf2Sync,
+  createPrivateKey,
+  createPublicKey,
+  createECDH,
 } from 'crypto';
 
 export function sha256(data: string): string {
@@ -14,15 +17,11 @@ export function sha256(data: string): string {
 }
 
 export interface KeyPair {
-  publicKey: string; // PEM-encoded
-  privateKey: string; // PEM-encoded
+  publicKey: string; // PEM-encoded (SPKI)
+  privateKey: string; // PEM-encoded (PKCS8) — in memory only, never stored
 }
 
-/**
- * Generates an ECDSA (secp256k1) key pair for a validator.
- * secp256k1 is the same curve used by Bitcoin/Ethereum, so this generalizes
- * well if you later add wallet-style transaction signing too.
- */
+/** Generates an ECDSA (secp256k1) key pair. */
 export function generateValidatorKeyPair(): KeyPair {
   const { publicKey, privateKey } = generateKeyPairSync('ec', {
     namedCurve: 'secp256k1',
@@ -52,63 +51,187 @@ export function verify(data: string, signatureHex: string, publicKeyPem: string)
 }
 
 // ---------------------------------------------------------------------------
-// Private key encryption at rest
+// Keystore format shared with the frontend (frontend crypto.js / wallet.js)
 //
-// Validator private keys must never be written to disk in plaintext. Each
-// key file stores an EncryptedPrivateKey blob instead: a passphrase-derived
-// AES-256-GCM key encrypts the PEM, and the GCM auth tag lets decryption
-// fail loudly (rather than silently producing garbage) if the passphrase is
-// wrong or the file was tampered with.
+//   private key : raw 32-byte secp256k1 scalar
+//   KDF         : PBKDF2-SHA256, 250,000 iterations, 16-byte salt
+//   cipher      : AES-256-GCM, 12-byte IV, 16-byte tag APPENDED to ciphertext
+//   public key  : SPKI PEM (64-char lines, trailing newline)
+//   address     : '0x' + last 40 hex chars of sha256(publicKey PEM)
 // ---------------------------------------------------------------------------
 
 export interface EncryptedPrivateKey {
-  salt: string; // hex, per-key random salt for scrypt
-  iv: string; // hex, random 96-bit GCM nonce
-  authTag: string; // hex, GCM authentication tag
-  ciphertext: string; // hex
+  salt: string; // hex, 16 bytes
+  iv: string; // hex, 12 bytes
+  ciphertext: string; // hex, AES-256-GCM ciphertext || 16-byte auth tag
 }
 
-const SCRYPT_KEYLEN = 32; // 256-bit key for AES-256-GCM
+export interface Keystore {
+  version: 1;
+  name?: string;
+  address: string;
+  publicKey: string; // SPKI PEM
+  encryptedPrivateKey: EncryptedPrivateKey;
+}
+
+const PBKDF2_ITERATIONS = 250_000;
+const GCM_TAG_LEN = 16;
+// DER header for an uncompressed secp256k1 SPKI public key (ends in 0x04 point marker).
+const SPKI_PREFIX_HEX = '3056301006072a8648ce3d020106052b8104000a03420004';
 
 function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return scryptSync(passphrase, salt, SCRYPT_KEYLEN);
+  return pbkdf2Sync(passphrase, salt, PBKDF2_ITERATIONS, 32, 'sha256');
 }
 
-export function encryptPrivateKey(privateKeyPem: string, passphrase: string): EncryptedPrivateKey {
+function encryptBytes(plain: Uint8Array, passphrase: string): EncryptedPrivateKey {
   const salt = randomBytes(16);
   const iv = randomBytes(12);
-  const key = deriveKey(passphrase, salt);
-
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const ciphertext = Buffer.concat([cipher.update(privateKeyPem, 'utf-8'), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-
+  const cipher = createCipheriv('aes-256-gcm', deriveKey(passphrase, salt), iv);
+  const ct = Buffer.concat([cipher.update(plain), cipher.final(), cipher.getAuthTag()]);
   return {
     salt: salt.toString('hex'),
     iv: iv.toString('hex'),
-    authTag: authTag.toString('hex'),
-    ciphertext: ciphertext.toString('hex'),
+    ciphertext: ct.toString('hex'),
   };
 }
 
-/**
- * Throws if the passphrase is wrong or the ciphertext/authTag were altered —
- * callers should catch this and fail closed (never fall back to an
- * unauthenticated or empty key).
- */
-export function decryptPrivateKey(enc: EncryptedPrivateKey, passphrase: string): string {
-  const salt = Buffer.from(enc.salt, 'hex');
-  const iv = Buffer.from(enc.iv, 'hex');
-  const authTag = Buffer.from(enc.authTag, 'hex');
-  const ciphertext = Buffer.from(enc.ciphertext, 'hex');
-  const key = deriveKey(passphrase, salt);
-
-  const decipher = createDecipheriv('aes-256-gcm', key, iv);
-  decipher.setAuthTag(authTag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plaintext.toString('utf-8');
+/** Throws on wrong passphrase or tampering (GCM auth failure). */
+function decryptBytes(enc: EncryptedPrivateKey, passphrase: string): Buffer {
+  const all = Buffer.from(enc.ciphertext, 'hex');
+  if (all.length <= GCM_TAG_LEN) throw new Error('ciphertext too short');
+  const decipher = createDecipheriv(
+    'aes-256-gcm',
+    deriveKey(passphrase, Buffer.from(enc.salt, 'hex')),
+    Buffer.from(enc.iv, 'hex')
+  );
+  decipher.setAuthTag(all.subarray(all.length - GCM_TAG_LEN));
+  return Buffer.concat([
+    decipher.update(all.subarray(0, all.length - GCM_TAG_LEN)),
+    decipher.final(),
+  ]);
 }
 
+// --- raw key <-> PEM conversions -------------------------------------------
+
+function padTo32(buf: Buffer): Buffer {
+  if (buf.length === 32) return buf;
+  if (buf.length > 32) throw new Error('private scalar longer than 32 bytes');
+  return Buffer.concat([Buffer.alloc(32 - buf.length), buf]);
+}
+
+function privateKeyBytesFromPem(pem: string): Buffer {
+  const d = createPrivateKey(pem).export({ format: 'jwk' }).d;
+  if (!d) throw new Error('could not extract private scalar');
+  return padTo32(Buffer.from(d, 'base64url'));
+}
+
+/** Real derivation via ECDH — same result as noble's getPublicKey(sk, false) on the frontend. */
+function uncompressedPubFromBytes(priv: Uint8Array): Buffer {
+  const ecdh = createECDH('secp256k1');
+  ecdh.setPrivateKey(Buffer.from(priv));
+  return ecdh.getPublicKey(); // 65 bytes: 04 || X || Y
+}
+
+export function publicKeyPemFromPrivateKeyBytes(priv: Uint8Array): string {
+  const der = Buffer.concat([
+    Buffer.from(SPKI_PREFIX_HEX, 'hex'),
+    uncompressedPubFromBytes(priv).subarray(1),
+  ]);
+  return createPublicKey({ key: der, format: 'der', type: 'spki' }).export({
+    type: 'spki',
+    format: 'pem',
+  }) as string;
+}
+
+function privateKeyPemFromBytes(priv: Uint8Array): string {
+  const pub = uncompressedPubFromBytes(priv);
+  return createPrivateKey({
+    key: {
+      kty: 'EC',
+      crv: 'secp256k1',
+      d: Buffer.from(priv).toString('base64url'),
+      x: pub.subarray(1, 33).toString('base64url'),
+      y: pub.subarray(33, 65).toString('base64url'),
+    },
+    format: 'jwk',
+  }).export({ type: 'pkcs8', format: 'pem' }) as string;
+}
+
+// --- address ---------------------------------------------------------------
+
+/**
+ * Re-exports the key through Node so CRLF / missing-trailing-newline PEMs
+ * hash to the same address. Throws on garbage or non-secp256k1 keys.
+ */
+export function canonicalPublicKeyPem(pem: string): string {
+  const key = createPublicKey(pem);
+  if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'secp256k1') {
+    throw new Error('public key must be secp256k1');
+  }
+  return key.export({ type: 'spki', format: 'pem' }) as string;
+}
+
+/** Throws if the public key is invalid. */
 export function addressFromPublicKey(publicKeyPem: string): string {
-  return '0x' + sha256(publicKeyPem).slice(-40);
+  return '0x' + sha256(canonicalPublicKeyPem(publicKeyPem)).slice(-40);
+}
+
+// --- keystore create / unlock ----------------------------------------------
+
+export function createKeystore(passphrase: string, name?: string): Keystore {
+  const { publicKey, privateKey } = generateValidatorKeyPair();
+  const raw = privateKeyBytesFromPem(privateKey);
+  try {
+    return {
+      version: 1,
+      ...(name ? { name } : {}),
+      address: addressFromPublicKey(publicKey),
+      publicKey,
+      encryptedPrivateKey: encryptBytes(raw, passphrase),
+    };
+  } finally {
+    raw.fill(0);
+  }
+}
+
+/**
+ * Validates and decrypts a keystore (made by core OR the frontend).
+ * Checks: shape, address == hash(publicKey), GCM auth (wrong passphrase /
+ * tampering), and that the decrypted key really produces publicKey.
+ * Throws on any failure — callers should fail closed.
+ */
+export function unlockKeystore(ks: any, passphrase: string): KeyPair & { address: string } {
+  const enc = ks?.encryptedPrivateKey;
+  const isHex = (s: any) =>
+    typeof s === 'string' && s.length > 0 && s.length % 2 === 0 && /^[0-9a-f]+$/i.test(s);
+
+  if (
+    typeof ks?.address !== 'string' ||
+    typeof ks?.publicKey !== 'string' ||
+    !enc ||
+    !isHex(enc.salt) ||
+    !isHex(enc.iv) ||
+    !isHex(enc.ciphertext)
+  ) {
+    throw new Error('keystore is missing required fields');
+  }
+
+  const canonicalPub = canonicalPublicKeyPem(ks.publicKey);
+  if (addressFromPublicKey(ks.publicKey) !== ks.address) {
+    throw new Error('keystore address does not match its public key');
+  }
+
+  const raw = decryptBytes(enc, passphrase); // throws on wrong passphrase
+  try {
+    if (publicKeyPemFromPrivateKeyBytes(raw) !== canonicalPub) {
+      throw new Error('decrypted key does not match keystore public key');
+    }
+    return {
+      address: ks.address,
+      publicKey: canonicalPub,
+      privateKey: privateKeyPemFromBytes(raw),
+    };
+  } finally {
+    raw.fill(0);
+  }
 }

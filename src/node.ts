@@ -4,7 +4,7 @@ import { ValidatorSet } from './validatorSet';
 import { P2PNode } from './p2p';
 import { startApi } from './api';
 import { Block } from './block';
-import { KeyPair, EncryptedPrivateKey, decryptPrivateKey } from './crypto';
+import { KeyPair, unlockKeystore } from './crypto';
 import 'dotenv/config';
 
 const API_PORT = Number(process.env.API_PORT || 3000);
@@ -25,7 +25,6 @@ const BLOCK_TIMEOUT_MS = Number(process.env.BLOCK_TIMEOUT_MS || 15000);
 // Mandatory wait inside each slot before its owner may propose. Like
 // BLOCK_TIMEOUT_MS, this MUST match on every node.
 const SLOT_WAIT_MS = Number(process.env.SLOT_WAIT_MS || 3000);
-
 
 if (!existsSync('keys/validators-public.json')) {
   console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
@@ -52,19 +51,15 @@ if (VALIDATOR_INDEX !== undefined) {
     process.exit(1);
   }
 
-  const stored = JSON.parse(readFileSync(path, 'utf-8')) as {
-    publicKey: string;
-    encryptedPrivateKey: EncryptedPrivateKey;
-  };
+  const stored = JSON.parse(readFileSync(path, 'utf-8'));
 
   try {
-    const privateKey = decryptPrivateKey(stored.encryptedPrivateKey, passphrase);
-    myKeys = { publicKey: stored.publicKey, privateKey };
-  } catch {
-    // Fail closed: wrong passphrase or a corrupted/tampered key file both
-    // land here (GCM auth tag check fails either way). Never fall back to
-    // running unsigned or with a bad key.
-    console.error('[node] Failed to decrypt validator private key — wrong VALIDATOR_KEY_PASSPHRASE?');
+    const { publicKey, privateKey } = unlockKeystore(stored, passphrase);
+    myKeys = { publicKey, privateKey };
+  } catch (err) {
+    // Fail closed: wrong passphrase, tampered file, or mismatched keys all
+    // land here. Never fall back to running unsigned or with a bad key.
+    console.error(`[node] Failed to unlock validator key: ${(err as Error).message}`);
     process.exit(1);
   }
 
@@ -101,7 +96,6 @@ startApi(blockchain, p2p, API_PORT, myKeys);
 // The manual POST /propose endpoint in api.ts still exists and uses the
 // exact same slot-ownership check, so it stays useful for forcing an
 // immediate proposal during testing/demos.
-// --- Automatic block proposal -----------------------------------------
 if (myKeys) {
   const POLL_INTERVAL_MS = Math.max(250, Math.floor(blockchain.slotDurationMs / 10));
 
@@ -110,7 +104,6 @@ if (myKeys) {
     const currentSlot = blockchain.getSlot(now);
 
     if (blockchain.pendingTransactions.length === 0) {
-      //console.debug(`[auto-propose] tick: mempool empty, nothing to propose (slot ${currentSlot})`);
       return; // nothing to propose
     }
 
@@ -164,5 +157,5 @@ if (myKeys) {
     }
   }, POLL_INTERVAL_MS);
 
-  console.log(`[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms (3s slot delay enforced)`);
+  console.log(`[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms (${SLOT_WAIT_MS}ms slot wait enforced)`);
 }
