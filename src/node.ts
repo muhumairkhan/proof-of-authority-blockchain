@@ -5,15 +5,49 @@ import { P2PNode } from './p2p';
 import { startApi } from './api';
 import { Block } from './block';
 import { KeyPair, unlockKeystore } from './crypto';
+import { discoverValidatorNodes, peerAddresses, NodeInfo } from './peers';
 import 'dotenv/config';
 
-const API_PORT = Number(process.env.API_PORT || 3000);
-const P2P_PORT = Number(process.env.P2P_PORT || 6000);
-const PEERS = (process.env.PEERS || '').split(',').filter(Boolean);
-// Which key file this node holds, e.g. "0", "1", "2". Omit to run as a
-// non-validating full node (still syncs the chain and accepts transactions).
-const VALIDATOR_INDEX = process.env.VALIDATOR_INDEX;
+// --- Network identity, discovered from keys/validator-*.json -------------
+// Each key file carries its node's validatorIndex / apiPort / p2pPort (written
+// by `npm run generate-keys`). That means:
+//   * a validator only needs VALIDATOR_INDEX to know which file is "me" and
+//     which ports to bind;
+//   * peers are exactly the OTHER validators whose key files exist — with one
+//     key file there are no peers, instead of phantom hard-coded ones.
+// A non-validating full node (VALIDATOR_INDEX unset) has no key file of its
+// own, so it takes API_PORT / P2P_PORT from env and peers with every
+// validator found.
+if (!existsSync('keys/validators-public.json')) {
+  console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
+  process.exit(1);
+}
+
+let knownNodes: NodeInfo[];
+try {
+  knownNodes = discoverValidatorNodes('keys');
+} catch (err) {
+  console.error(`[node] ${(err as Error).message}`);
+  process.exit(1);
+}
+
+const VALIDATOR_INDEX = process.env.VALIDATOR_INDEX; // e.g. "0", "1" — omit for a full node
+
+let self: NodeInfo | undefined;
+if (VALIDATOR_INDEX !== undefined) {
+  self = knownNodes.find((n) => n.validatorIndex === Number(VALIDATOR_INDEX));
+  if (!self) {
+    console.error(`[node] No key file found for validator ${VALIDATOR_INDEX} in keys/ (found: ${knownNodes.map((n) => n.validatorIndex).join(', ') || 'none'})`);
+    process.exit(1);
+  }
+}
+
+const API_PORT = self?.apiPort ?? Number(process.env.API_PORT || 3000);
+const P2P_PORT = self?.p2pPort ?? Number(process.env.P2P_PORT || 6000);
+const PEERS = peerAddresses(knownNodes, self);
 const DATA_FILE = process.env.DATA_FILE || `data/chain-${P2P_PORT}.json`;
+
+console.log(`[node] API :${API_PORT}  P2P :${P2P_PORT}  peers: [${PEERS.join(', ') || 'none'}]`);
 
 // Fixed width of a time slot in ms. Ownership of each slot cycles through
 // the validator set based purely on wall-clock time (see
@@ -26,17 +60,12 @@ const BLOCK_TIMEOUT_MS = Number(process.env.BLOCK_TIMEOUT_MS || 15000);
 // BLOCK_TIMEOUT_MS, this MUST match on every node.
 const SLOT_WAIT_MS = Number(process.env.SLOT_WAIT_MS || 3000);
 
-if (!existsSync('keys/validators-public.json')) {
-  console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
-  process.exit(1);
-}
-
 const publicKeys: string[] = JSON.parse(readFileSync('keys/validators-public.json', 'utf-8'));
 const validatorSet = new ValidatorSet(publicKeys);
 
 let myKeys: KeyPair | null = null;
 if (VALIDATOR_INDEX !== undefined) {
-  const path = `keys/validator-${VALIDATOR_INDEX}.json`;
+  const path = `keys/validator-${self!.validatorIndex}.json`;
   if (!existsSync(path)) {
     console.error(`No key file found at ${path}`);
     process.exit(1);

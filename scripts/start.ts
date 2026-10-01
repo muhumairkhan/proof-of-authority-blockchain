@@ -1,9 +1,7 @@
-import { readFileSync, existsSync } from 'fs';
+import { existsSync } from 'fs';
 import { spawn, execSync, ChildProcess } from 'child_process';
+import { discoverValidatorNodes } from '../src/peers';
 import 'dotenv/config';
-
-const BASE_API_PORT = Number(process.env.BASE_API_PORT || 3000);
-const BASE_P2P_PORT = Number(process.env.BASE_P2P_PORT || 6000);
 
 // `npm start -- reset` (or `npm run start -- reset`) wipes keys/data and
 // regenerates keys before starting, so you can go from zero to running
@@ -35,45 +33,38 @@ if (!process.env.VALIDATOR_KEY_PASSPHRASE) {
   process.exit(1);
 }
 
-const publicKeys: string[] = JSON.parse(readFileSync('keys/validators-public.json', 'utf-8'));
-const numValidators = publicKeys.length;
-
-if (numValidators === 0) {
-  console.error('[start] keys/validators-public.json contains no validators.');
+// Ports and peers now come from keys/validator-*.json (see src/peers.ts),
+// so each child only needs to be told WHICH validator it is.
+let nodes;
+try {
+  nodes = discoverValidatorNodes('keys');
+} catch (err) {
+  console.error(`[start] ${(err as Error).message}`);
   process.exit(1);
 }
 
-const p2pPorts = Array.from({ length: numValidators }, (_, i) => BASE_P2P_PORT + i);
+if (nodes.length === 0) {
+  console.error('[start] No keys/validator-*.json files found.');
+  process.exit(1);
+}
+
 const children: ChildProcess[] = [];
 let shuttingDown = false;
 
-console.log(`[start] Found ${numValidators} validator(s) in keys/validators-public.json — starting ${numValidators} node(s)...`);
+console.log(`[start] Found ${nodes.length} validator key file(s) — starting ${nodes.length} node(s)...`);
 
-for (let i = 0; i < numValidators; i++) {
-  const apiPort = BASE_API_PORT + i;
-  const p2pPort = BASE_P2P_PORT + i;
-  const peers = p2pPorts
-    .filter((p) => p !== p2pPort)
-    .map((p) => `ws://localhost:${p}`)
-    .join(',');
-
-  console.log(`[start] validator #${i} -> API :${apiPort}  P2P :${p2pPort}  peers: [${peers || 'none'}]`);
+for (const n of nodes) {
+  console.log(`[start] validator #${n.validatorIndex} -> API :${n.apiPort}  P2P :${n.p2pPort}`);
 
   const child = spawn('npx', ['ts-node', 'src/node.ts'], {
-    env: {
-      ...process.env,
-      API_PORT: String(apiPort),
-      P2P_PORT: String(p2pPort),
-      VALIDATOR_INDEX: String(i),
-      PEERS: peers,
-    },
+    env: { ...process.env, VALIDATOR_INDEX: String(n.validatorIndex) },
     stdio: 'inherit',
     shell: process.platform === 'win32',
   });
 
   child.on('exit', (code) => {
     if (!shuttingDown) {
-      console.error(`[start] validator #${i} (P2P :${p2pPort}) exited unexpectedly with code ${code}`);
+      console.error(`[start] validator #${n.validatorIndex} (P2P :${n.p2pPort}) exited unexpectedly with code ${code}`);
     }
   });
 
