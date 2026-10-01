@@ -5,19 +5,19 @@ import { P2PNode } from './p2p';
 import { startApi } from './api';
 import { Block } from './block';
 import { KeyPair, unlockKeystore } from './crypto';
-import { discoverValidatorNodes, peerAddresses, NodeInfo } from './peers';
+import { discoverValidatorNodes, NodeInfo } from './nodeInfo';
+import { PeerTable, normalizeAddress } from './peerTable';
 import 'dotenv/config';
 
-// --- Network identity, discovered from keys/validator-*.json -------------
-// Each key file carries its node's validatorIndex / apiPort / p2pPort (written
-// by `npm run generate-keys`). That means:
-//   * a validator only needs VALIDATOR_INDEX to know which file is "me" and
-//     which ports to bind;
-//   * peers are exactly the OTHER validators whose key files exist — with one
-//     key file there are no peers, instead of phantom hard-coded ones.
-// A non-validating full node (VALIDATOR_INDEX unset) has no key file of its
-// own, so it takes API_PORT / P2P_PORT from env and peers with every
-// validator found.
+// --- Network identity -----------------------------------------------------
+// A validator's own ports live in its key file (keys/validator-N.json, written
+// by `npm run generate-keys`); VALIDATOR_INDEX picks which file is "me".
+// A non-validating full node (VALIDATOR_INDEX unset) takes API_PORT / P2P_PORT
+// from env instead.
+//
+// Finding OTHER nodes is not done from key files: this node dials the
+// bootnode(s), asks them for their peers, and dials those (see p2p.ts).
+// BOOTNODES is a comma-separated list; the default is the first validator.
 if (!existsSync('keys/validators-public.json')) {
   console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
   process.exit(1);
@@ -44,10 +44,23 @@ if (VALIDATOR_INDEX !== undefined) {
 
 const API_PORT = self?.apiPort ?? Number(process.env.API_PORT || 3000);
 const P2P_PORT = self?.p2pPort ?? Number(process.env.P2P_PORT || 6000);
-const PEERS = peerAddresses(knownNodes, self);
 const DATA_FILE = process.env.DATA_FILE || `data/chain-${P2P_PORT}.json`;
+const PEERS_FILE = process.env.PEERS_FILE || `data/peers-${P2P_PORT}.json`;
 
-console.log(`[node] API :${API_PORT}  P2P :${P2P_PORT}  peers: [${PEERS.join(', ') || 'none'}]`);
+const BOOTNODES = (process.env.BOOTNODES || 'ws://localhost:6000')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((raw) => {
+    const address = normalizeAddress(raw);
+    if (!address) {
+      console.error(`[node] Invalid BOOTNODES entry "${raw}" (expected ws://host:port)`);
+      process.exit(1);
+    }
+    return address;
+  });
+
+console.log(`[node] API :${API_PORT}  P2P :${P2P_PORT}  bootnodes: [${BOOTNODES.join(', ')}]`);
 
 // Fixed width of a time slot in ms. Ownership of each slot cycles through
 // the validator set based purely on wall-clock time (see
@@ -102,12 +115,11 @@ const genesisAllocations = existsSync('data/genesis.json')
   : {};
 
 const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS, SLOT_WAIT_MS, genesisAllocations);
-const p2p = new P2PNode(blockchain, P2P_PORT);
+// Known peers survive restarts (data/peers-<port>.json), so a restart doesn't
+// depend on the bootnode being up. This node never dials its own address.
+const peerTable = new PeerTable({ filePath: PEERS_FILE, bootnodes: BOOTNODES });
+const p2p = new P2PNode(blockchain, P2P_PORT, peerTable);
 p2p.start();
-
-for (const peer of PEERS) {
-  p2p.connectToPeer(peer);
-}
 
 startApi(blockchain, p2p, API_PORT, myKeys);
 
