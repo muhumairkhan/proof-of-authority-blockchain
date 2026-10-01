@@ -8,6 +8,9 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 
+import { WebSocketServer, WebSocket } from 'ws';
+import http from 'http';
+
 export function startApi(
   blockchain: Blockchain,
   p2p: P2PNode,
@@ -18,161 +21,146 @@ export function startApi(
   app.use(cors());
   app.use(express.json());
 
-  app.get('/blocks', (_req, res) => {
-    res.json(blockchain.chain);
-  });
+  // Create an explicit HTTP Server to share ports between Express and WebSockets
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server });
 
-  app.get('/validators', (_req, res) => {
-    try {
-      const keysDir = path.join(__dirname, '../keys'); 
-      
-      // Read all files inside the keys/ directory
-      const files = fs.readdirSync(keysDir);
-      
-      // Filter for files that match the 'validator-*.json' pattern
-      const validatorFiles = files.filter(file => file.startsWith('validator-') && file.endsWith('.json'));
-      
-      // Iterate over files, parse them, and strip the private key
-      const validatorsResponse = validatorFiles.map(file => {
-        const filePath = path.join(keysDir, file);
-        const fileContent = fs.readFileSync(filePath, 'utf-8');
-        
-        // Destructure to extract and omit encryptedPrivateKey
-        const { encryptedPrivateKey, ...publicValidatorData } = JSON.parse(fileContent);
-        
-        return publicValidatorData;
-      });
+  // Optional: Keep your existing app.get/app.post routes here for backwards compatibility
 
-      res.json(validatorsResponse);
-      
-    } catch (error) {
-      console.error('Error reading validator files:', error);
-      res.status(500).json({ error: 'Internal Server Error' });
-    }
-  });
+  // Global handler for WebSocket connections
+  wss.on('connection', (ws: WebSocket) => {
+    console.log('[ws] Client connected');
 
-  app.get('/pending', (_req, res) => {
-    res.json(blockchain.pendingTransactions);
-  });
+    ws.on('message', (message: string) => {
+      try {
+        const { id, action, payload } = JSON.parse(message);
 
-  // Who this node is connected to right now, plus every address it knows about.
-  app.get('/peers', (_req, res) => {
-    res.json(p2p.getPeerInfo());
-  });
+        // Core RPC Router wrapping your existing logic
+        switch (action) {
+          case '/blocks':
+            return ws.send(JSON.stringify({ id, status: 200, data: blockchain.chain }));
 
-  app.get('/accounts/:address', (req, res) => {
-    res.json(blockchain.getAccount(req.params.address));
-  });
+          case '/validators':
+            try {
+              const keysDir = path.join(__dirname, '../keys');
+              const files = fs.readdirSync(keysDir);
+              const validatorFiles = files.filter(f => f.startsWith('validator-') && f.endsWith('.json'));
+              const validatorsResponse = validatorFiles.map(file => {
+                const { encryptedPrivateKey, ...publicValidatorData } = JSON.parse(fs.readFileSync(path.join(keysDir, file), 'utf-8'));
+                return publicValidatorData;
+              });
+              ws.send(JSON.stringify({ id, status: 200, data: validatorsResponse }));
+            } catch (err) {
+              ws.send(JSON.stringify({ id, status: 500, data: { error: 'Internal Server Error' } }));
+            }
+            break;
 
-  app.get('/status', (_req, res) => {
-    const latest = blockchain.getLatestBlock();
-    const now = Date.now();
-    const currentSlot = blockchain.getSlot(now);
+          case '/pending':
+            return ws.send(JSON.stringify({ id, status: 200, data: blockchain.pendingTransactions }));
 
-    res.json({
-      chainLength: blockchain.chain.length,
-      latestBlockIndex: latest.index,
-      latestBlockHash: latest.hash,
-      latestBlockTimestamp: latest.timestamp,
-      pendingTransactions: blockchain.pendingTransactions.length,
-      isValidator: myValidatorKeys !== null,
+          case '/peers':
+            return ws.send(JSON.stringify({ id, status: 200, data: p2p.getPeerInfo() }));
 
-      // slot info for the UI
-      serverTime: now,
-      slotDurationMs: blockchain.slotDurationMs,
-      slotWaitMs: blockchain.slotWaitMs,
-      currentSlot,
-      currentProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot),
-      nextProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot + 1),
+          case '/accounts':
+            return ws.send(JSON.stringify({ id, status: 200, data: blockchain.getAccount(payload.address) }));
+
+          case '/status':
+            const latest = blockchain.getLatestBlock();
+            const now = Date.now();
+            const currentSlot = blockchain.getSlot(now);
+            return ws.send(JSON.stringify({
+              id, status: 200, data: {
+                chainLength: blockchain.chain.length,
+                latestBlockIndex: latest.index,
+                latestBlockHash: latest.hash,
+                latestBlockTimestamp: latest.timestamp,
+                pendingTransactions: blockchain.pendingTransactions.length,
+                isValidator: myValidatorKeys !== null,
+                serverTime: now,
+                slotDurationMs: blockchain.slotDurationMs,
+                slotWaitMs: blockchain.slotWaitMs,
+                currentSlot,
+                currentProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot),
+                nextProposerIndex: blockchain.validatorSet.getIndexForSlot(currentSlot + 1),
+              }
+            }));
+
+          case '/transactions':
+            const b = payload ?? {};
+            const tx: Transaction = {
+              from: b.from, to: b.to, amount: b.amount, nonce: b.nonce,
+              timestamp: b.timestamp, publicKey: b.publicKey, signature: b.signature, hash: b.hash,
+            };
+            const txResult = blockchain.addTransaction(tx);
+            if (!txResult.added) {
+              return ws.send(JSON.stringify({ id, status: 400, data: { error: txResult.reason } }));
+            }
+            p2p.broadcastTransaction(tx);
+            
+            // Broadcast live update to all listeners
+            broadcastToAll({ event: 'new_transaction', data: tx });
+            return ws.send(JSON.stringify({ id, status: 200, data: { success: true, transaction: tx } }));
+
+          case '/propose':
+            if (!myValidatorKeys) {
+              return ws.send(JSON.stringify({ id, status: 400, data: { error: 'This node has no validator keys configured' } }));
+            }
+            const propNow = Date.now();
+            const waitRemaining = blockchain.getSlotWaitRemaining(propNow);
+            if (waitRemaining > 0) {
+              return ws.send(JSON.stringify({ id, status: 429, data: { error: `Must wait...`, timeIntoSlot: blockchain.getTimeIntoSlot(propNow) } }));
+            }
+            const propLatest = blockchain.getLatestBlock();
+            const nextIndex = propLatest.index + 1;
+            const propSlot = blockchain.getSlot(propNow);
+
+            if (propSlot <= blockchain.getSlot(propLatest.timestamp)) {
+              return ws.send(JSON.stringify({ id, status: 409, data: { error: 'The current time slot has already been used' } }));
+            }
+            if (blockchain.validatorSet.getValidatorForSlot(propSlot) !== myValidatorKeys.publicKey) {
+              return ws.send(JSON.stringify({ id, status: 409, data: { error: "It is not this node's turn" } }));
+            }
+            const transactions = blockchain.selectTransactionsForBlock();
+            if (transactions.length === 0) {
+              return ws.send(JSON.stringify({ id, status: 400, data: { error: 'No valid pending transactions' } }));
+            }
+
+            const block = Block.proposeBlock({
+              index: nextIndex, timestamp: propNow, transactions, previousHash: propLatest.hash, validatorPublicKey: myValidatorKeys.publicKey,
+            }, myValidatorKeys.privateKey);
+
+            const blockResult = blockchain.addBlock(block);
+            if (!blockResult.success) {
+              return ws.send(JSON.stringify({ id, status: 500, data: { error: blockResult.reason } }));
+            }
+
+            p2p.broadcastNewBlock(block);
+            
+            // Broadcast live update to all listeners
+            broadcastToAll({ event: 'new_block', data: block });
+            return ws.send(JSON.stringify({ id, status: 200, data: { success: true, block } }));
+
+          default:
+            ws.send(JSON.stringify({ id, status: 404, data: { error: 'Action not found' } }));
+        }
+      } catch (err) {
+        console.error('[ws] Failed processing message', err);
+      }
     });
   });
 
-  // Accepts a fully SIGNED transaction (build one with `npm run wallet -- send ...`).
-  app.post('/transactions', (req, res) => {
-    const b = req.body ?? {};
-    // Copy only the known fields so nothing extra gets gossiped or stored.
-    const tx: Transaction = {
-      from: b.from,
-      to: b.to,
-      amount: b.amount,
-      nonce: b.nonce,
-      timestamp: b.timestamp,
-      publicKey: b.publicKey,
-      signature: b.signature,
-      hash: b.hash,
-    };
+  // Helper function to broadcast new block emissions out dynamically
+  function broadcastToAll(messageObj: any) {
+    const raw = JSON.stringify(messageObj);
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(raw);
+      }
+    });
+  }
 
-    const result = blockchain.addTransaction(tx);
-    if (!result.added) {
-      return res.status(400).json({ error: result.reason });
-    }
-    p2p.broadcastTransaction(tx);
-    res.json({ success: true, transaction: tx });
-  });
-
-  // Manually trigger this node to propose the next block, if it's actually its turn.
-  app.post('/propose', (_req, res) => {
-    if (!myValidatorKeys) {
-      return res.status(400).json({ error: 'This node has no validator keys configured (VALIDATOR_INDEX not set)' });
-    }
-
-    const now = Date.now();
-
-    const waitRemaining = blockchain.getSlotWaitRemaining(now);
-    if (waitRemaining > 0) {
-      return res.status(429).json({
-        error: `Must wait ${blockchain.slotWaitMs}ms within the slot before proposing. ${waitRemaining}ms remaining.`,
-        timeIntoSlot: blockchain.getTimeIntoSlot(now),
-      });
-    }
-
-    const latest = blockchain.getLatestBlock();
-    const nextIndex = latest.index + 1;
-    const currentSlot = blockchain.getSlot(now);
-
-    if (currentSlot <= blockchain.getSlot(latest.timestamp)) {
-      return res.status(409).json({
-        error: 'The current time slot has already been used by an earlier block — wait for the next slot',
-        currentSlot,
-      });
-    }
-
-    const expectedValidator = blockchain.validatorSet.getValidatorForSlot(currentSlot);
-
-    if (expectedValidator !== myValidatorKeys.publicKey) {
-      return res.status(409).json({
-        error: "It is not this node's turn to propose in the current time slot",
-        nextIndex,
-        currentSlot,
-      });
-    }
-
-    const transactions = blockchain.selectTransactionsForBlock();
-    if (transactions.length === 0) {
-      return res.status(400).json({ error: 'No valid pending transactions to include' });
-    }
-
-    const block = Block.proposeBlock(
-      {
-        index: nextIndex,
-        timestamp: now,
-        transactions,
-        previousHash: latest.hash,
-        validatorPublicKey: myValidatorKeys.publicKey,
-      },
-      myValidatorKeys.privateKey
-    );
-
-    const result = blockchain.addBlock(block);
-    if (!result.success) {
-      return res.status(500).json({ error: result.reason });
-    }
-
-    p2p.broadcastNewBlock(block);
-    res.json({ success: true, block });
-  });
-
-  app.listen(apiPort, () => {
-    console.log(`[api] Listening on http://localhost:${apiPort}`);
+  // Start the underlying HTTP + WS bundle server
+  server.listen(apiPort, () => {
+    console.log(`[api/ws] Combined server listening on http/ws://localhost:${apiPort}`);
   });
 }
