@@ -1,6 +1,10 @@
 import { existsSync, readdirSync, readFileSync } from 'fs';
 
-/** Network identity of a validator node, stored inside its keys/validator-N.json. */
+/**
+ * Network identity (ports) of a validator node, stored inside its
+ * keys/validator-N.json. Used only so a node knows which ports to bind —
+ * finding OTHER nodes is the job of the bootnode / peer table (peerTable.ts).
+ */
 export interface NodeInfo {
   validatorIndex: number;
   apiPort: number;
@@ -15,8 +19,7 @@ function isPort(n: unknown): n is number {
 
 /**
  * Scans `dir` for validator-N.json files and returns each one's NodeInfo,
- * sorted by validator index. Only files that actually exist are returned, so
- * with one key file you get one node — no phantom peers.
+ * sorted by validator index.
  *
  * Throws with a clear message on a stale/malformed file (e.g. one generated
  * before ports were stored in it) — the fix is `npm run reset`.
@@ -53,11 +56,4 @@ export function discoverValidatorNodes(dir = 'keys'): NodeInfo[] {
   }
 
   return nodes.sort((a, b) => a.validatorIndex - b.validatorIndex);
-}
-
-/** ws:// addresses of every discovered validator node except `self`. */
-export function peerAddresses(nodes: NodeInfo[], self?: NodeInfo): string[] {
-  return nodes
-    .filter((n) => n.validatorIndex !== self?.validatorIndex)
-    .map((n) => `ws://localhost:${n.p2pPort}`);
 }

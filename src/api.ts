@@ -28,6 +28,11 @@ export function startApi(
     res.json(blockchain.pendingTransactions);
   });
 
+  // Who this node is connected to right now, plus every address it knows about.
+  app.get('/peers', (_req, res) => {
+    res.json(p2p.getPeerInfo());
+  });
+
   app.get('/accounts/:address', (req, res) => {
     res.json(blockchain.getAccount(req.params.address));
   });

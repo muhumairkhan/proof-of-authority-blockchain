@@ -1,6 +1,6 @@
 import { existsSync } from 'fs';
 import { spawn, execSync, ChildProcess } from 'child_process';
-import { discoverValidatorNodes } from '../src/peers';
+import { discoverValidatorNodes } from '../src/nodeInfo';
 import 'dotenv/config';
 
 // `npm start -- reset` (or `npm run start -- reset`) wipes keys/data and
@@ -33,8 +33,9 @@ if (!process.env.VALIDATOR_KEY_PASSPHRASE) {
   process.exit(1);
 }
 
-// Ports and peers now come from keys/validator-*.json (see src/peers.ts),
-// so each child only needs to be told WHICH validator it is.
+// Each node's own ports come from its keys/validator-*.json (see src/nodeInfo.ts),
+// so each child only needs to be told WHICH validator it is. Peers are found
+// through the bootnode: validator 0, unless BOOTNODES is set explicitly.
 let nodes;
 try {
   nodes = discoverValidatorNodes('keys');
@@ -57,7 +58,11 @@ for (const n of nodes) {
   console.log(`[start] validator #${n.validatorIndex} -> API :${n.apiPort}  P2P :${n.p2pPort}`);
 
   const child = spawn('npx', ['ts-node', 'src/node.ts'], {
-    env: { ...process.env, VALIDATOR_INDEX: String(n.validatorIndex) },
+    env: {
+      ...process.env,
+      VALIDATOR_INDEX: String(n.validatorIndex),
+      BOOTNODES: process.env.BOOTNODES ?? `ws://localhost:${nodes[0].p2pPort}`,
+    },
     stdio: 'inherit',
     shell: process.platform === 'win32',
   });

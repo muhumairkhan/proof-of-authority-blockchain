@@ -12,7 +12,8 @@
     "node2": "cross-env VALIDATOR_INDEX=1 ts-node src/node.ts",
     "node3": "cross-env VALIDATOR_INDEX=2 ts-node src/node.ts",
     "fullnode": "cross-env API_PORT=3099 P2P_PORT=6099 ts-node src/node.ts",
-    "wallet": "ts-node scripts/wallet.ts"
+    "wallet": "ts-node scripts/wallet.ts",
+    "test:p2p": "ts-node scripts/p2p-test.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
