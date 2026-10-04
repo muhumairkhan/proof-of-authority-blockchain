@@ -4,12 +4,14 @@ import { Transaction } from './types';
 import { loadSnapshot, saveSnapshot } from './storage';
 import { WorldState, GenesisAllocations } from './state';
 import { verifyTransaction } from './transaction';
+import { EventEmitter } from 'events';
+
 
 type ChainValidation =
   | { ok: true; chain: Block[]; state: WorldState }
   | { ok: false; reason: string };
 
-export class Blockchain {
+export class Blockchain extends EventEmitter {
   chain: Block[];
   validatorSet: ValidatorSet;
   pendingTransactions: Transaction[] = [];
@@ -33,6 +35,8 @@ export class Blockchain {
     slotWaitMs = 3000,
     genesisAllocations: GenesisAllocations = {}
   ) {
+    super()
+
     if (slotWaitMs < 0 || slotWaitMs >= slotDurationMs) {
       throw new Error(
         `slotWaitMs (${slotWaitMs}) must be >= 0 and less than slotDurationMs (${slotDurationMs})`
@@ -112,6 +116,7 @@ export class Blockchain {
 
     this.pendingTransactions.push(tx);
     this.persist();
+    this.emit('pending');
     return { added: true };
   }
 
@@ -222,6 +227,7 @@ export class Blockchain {
     this.chain.push(block);
     this.pruneMempool();
     this.persist();
+    this.emit('blocks');
     return { success: true };
   }
 
@@ -272,6 +278,7 @@ export class Blockchain {
     this.state = result.state;
     this.pruneMempool();
     this.persist();
+    this.emit('blocks');
     return { replaced: true };
   }
 }
