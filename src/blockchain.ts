@@ -1,11 +1,10 @@
-import { Block } from './block';
-import { ValidatorSet } from './validatorSet';
-import { Transaction } from './types';
-import { loadSnapshot, saveSnapshot } from './storage';
-import { WorldState, GenesisAllocations } from './state';
-import { verifyTransaction } from './transaction';
-import { EventEmitter } from 'events';
-
+import { Block } from "./block";
+import { ValidatorSet } from "./validatorSet";
+import { Transaction } from "./types";
+import { loadSnapshot, saveSnapshot } from "./storage";
+import { WorldState, GenesisAllocations } from "./state";
+import { verifyTransaction } from "./transaction";
+import { EventEmitter } from "events";
 
 type ChainValidation =
   | { ok: true; chain: Block[]; state: WorldState }
@@ -33,13 +32,13 @@ export class Blockchain extends EventEmitter {
     dataFile?: string,
     slotDurationMs = 15000,
     slotWaitMs = 3000,
-    genesisAllocations: GenesisAllocations = {}
+    genesisAllocations: GenesisAllocations = {},
   ) {
-    super()
+    super();
 
     if (slotWaitMs < 0 || slotWaitMs >= slotDurationMs) {
       throw new Error(
-        `slotWaitMs (${slotWaitMs}) must be >= 0 and less than slotDurationMs (${slotDurationMs})`
+        `slotWaitMs (${slotWaitMs}) must be >= 0 and less than slotDurationMs (${slotDurationMs})`,
       );
     }
 
@@ -56,19 +55,33 @@ export class Blockchain extends EventEmitter {
       this.chain = restored.chain;
       this.state = restored.state;
       this.pendingTransactions = snapshot.pendingTransactions;
-      console.log(`[storage] Restored ${this.chain.length} blocks (${this.pendingTransactions.length} pending tx) from ${dataFile}`);
+      console.log(
+        `[storage] Restored ${this.chain.length} blocks (${this.pendingTransactions.length} pending tx) from ${dataFile}`,
+      );
     } else {
       if (snapshot && restored && !restored.ok) {
-        console.warn(`[storage] Saved chain failed replay (${restored.reason}) — starting from genesis. Run \`npm run reset\` if this is old-format data.`);
+        console.warn(
+          `[storage] Saved chain failed replay (${restored.reason}) — starting from genesis. Run \`npm run reset\` if this is old-format data.`,
+        );
       }
-      this.chain = [Block.createGenesisBlock()];
+      this.chain = [this.createGenesis()];
       this.state = new WorldState(genesisAllocations);
     }
   }
 
+  private createGenesis(): Block {
+    return Block.createGenesisBlock(
+      this.genesisAllocations,
+      this.validatorSet.getAll(),
+    );
+  }
+
   private persist() {
     if (!this.dataFile) return;
-    saveSnapshot(this.dataFile, { chain: this.chain, pendingTransactions: this.pendingTransactions });
+    saveSnapshot(this.dataFile, {
+      chain: this.chain,
+      pendingTransactions: this.pendingTransactions,
+    });
   }
 
   getLatestBlock(): Block {
@@ -89,7 +102,11 @@ export class Blockchain extends EventEmitter {
   /** Confirmed nonce + any contiguous pending txs, so a wallet can send several in a row. */
   getNextNonce(address: string): number {
     let next = this.state.getNonce(address);
-    while (this.pendingTransactions.some((t) => t.from === address && t.nonce === next)) {
+    while (
+      this.pendingTransactions.some(
+        (t) => t.from === address && t.nonce === next,
+      )
+    ) {
       next++;
     }
     return next;
@@ -102,21 +119,28 @@ export class Blockchain extends EventEmitter {
     if (!check.valid) return { added: false, reason: check.reason };
 
     if (this.pendingTransactions.some((t) => t.hash === tx.hash)) {
-      return { added: false, reason: 'duplicate transaction' };
+      return { added: false, reason: "duplicate transaction" };
     }
     if (tx.nonce < this.state.getNonce(tx.from)) {
-      return { added: false, reason: 'nonce already used' };
+      return { added: false, reason: "nonce already used" };
     }
-    if (this.pendingTransactions.some((t) => t.from === tx.from && t.nonce === tx.nonce)) {
-      return { added: false, reason: 'another pending tx from this sender already uses this nonce' };
+    if (
+      this.pendingTransactions.some(
+        (t) => t.from === tx.from && t.nonce === tx.nonce,
+      )
+    ) {
+      return {
+        added: false,
+        reason: "another pending tx from this sender already uses this nonce",
+      };
     }
     if (this.state.getBalance(tx.from) < tx.amount) {
-      return { added: false, reason: 'insufficient balance' };
+      return { added: false, reason: "insufficient balance" };
     }
 
     this.pendingTransactions.push(tx);
     this.persist();
-    this.emit('pending');
+    this.emit("pending");
     return { added: true };
   }
 
@@ -127,7 +151,7 @@ export class Blockchain extends EventEmitter {
   selectTransactionsForBlock(): Transaction[] {
     const sim = this.state.clone();
     const sorted = [...this.pendingTransactions].sort(
-      (a, b) => a.nonce - b.nonce || a.timestamp - b.timestamp
+      (a, b) => a.nonce - b.nonce || a.timestamp - b.timestamp,
     );
     const selected: Transaction[] = [];
     for (const tx of sorted) {
@@ -139,7 +163,7 @@ export class Blockchain extends EventEmitter {
   /** Drops txs whose nonce has already been consumed on-chain. */
   private pruneMempool() {
     this.pendingTransactions = this.pendingTransactions.filter(
-      (t) => t.nonce >= this.state.getNonce(t.from)
+      (t) => t.nonce >= this.state.getNonce(t.from),
     );
   }
 
@@ -164,57 +188,96 @@ export class Blockchain extends EventEmitter {
   // --- Validation --------------------------------------------------------
 
   /** Structural PoA rules (linkage, hash, signature, slot ownership). Does NOT look at transactions. */
-  isValidNewBlock(block: Block, previousBlock: Block): { valid: boolean; reason?: string } {
+  isValidNewBlock(
+    block: Block,
+    previousBlock: Block,
+  ): { valid: boolean; reason?: string } {
     if (block.index !== previousBlock.index + 1) {
-      return { valid: false, reason: `Bad index: expected ${previousBlock.index + 1}, got ${block.index}` };
+      return {
+        valid: false,
+        reason: `Bad index: expected ${previousBlock.index + 1}, got ${block.index}`,
+      };
     }
     if (block.previousHash !== previousBlock.hash) {
-      return { valid: false, reason: 'previousHash does not match previous block' };
+      return {
+        valid: false,
+        reason: "previousHash does not match previous block",
+      };
     }
     if (!block.isHashValid()) {
-      return { valid: false, reason: 'hash does not match block content (tampering?)' };
+      return {
+        valid: false,
+        reason: "hash does not match block content (tampering?)",
+      };
     }
     if (!block.isSignatureValid()) {
-      return { valid: false, reason: 'invalid validator signature' };
+      return { valid: false, reason: "invalid validator signature" };
     }
 
     const blockSlot = this.getSlot(block.timestamp);
     const previousSlot = this.getSlot(previousBlock.timestamp);
 
     if (blockSlot <= previousSlot) {
-      return { valid: false, reason: 'block timestamp falls in an already-used or past time slot' };
+      return {
+        valid: false,
+        reason: "block timestamp falls in an already-used or past time slot",
+      };
     }
 
     if (this.getTimeIntoSlot(block.timestamp) < this.slotWaitMs) {
-      return { valid: false, reason: `block was proposed before the ${this.slotWaitMs}ms slot wait time` };
+      return {
+        valid: false,
+        reason: `block was proposed before the ${this.slotWaitMs}ms slot wait time`,
+      };
     }
 
     const expectedValidator = this.validatorSet.getValidatorForSlot(blockSlot);
     if (block.validatorPublicKey !== expectedValidator) {
-      return { valid: false, reason: 'block was not signed by the validator assigned to this time slot' };
+      return {
+        valid: false,
+        reason:
+          "block was not signed by the validator assigned to this time slot",
+      };
     }
 
     return { valid: true };
   }
 
   /** Verifies every tx signature in the block, then applies them to `state` atomically. */
-  private applyBlockTransactions(block: Block, state: WorldState): { ok: boolean; reason?: string } {
-    if (!Array.isArray(block.transactions)) return { ok: false, reason: 'block.transactions is not an array' };
+  private applyBlockTransactions(
+    block: Block,
+    state: WorldState,
+  ): { ok: boolean; reason?: string } {
+    if (!Array.isArray(block.transactions))
+      return { ok: false, reason: "block.transactions is not an array" };
 
     for (const tx of block.transactions) {
       const check = verifyTransaction(tx);
-      if (!check.valid) return { ok: false, reason: `invalid transaction in block: ${check.reason}` };
+      if (!check.valid)
+        return {
+          ok: false,
+          reason: `invalid transaction in block: ${check.reason}`,
+        };
     }
     const result = state.applyAll(block.transactions);
     return result.ok ? { ok: true } : { ok: false, reason: result.reason };
   }
 
-  addBlock(rawBlock: any): { success: boolean; reason?: string; alreadyHave?: boolean } {
-    const block = rawBlock instanceof Block ? rawBlock : Block.fromPlain(rawBlock);
+  addBlock(rawBlock: any): {
+    success: boolean;
+    reason?: string;
+    alreadyHave?: boolean;
+  } {
+    const block =
+      rawBlock instanceof Block ? rawBlock : Block.fromPlain(rawBlock);
     const latest = this.getLatestBlock();
 
     if (block.index <= latest.index) {
-      return { success: false, reason: 'already have this block or an equal/later one', alreadyHave: true };
+      return {
+        success: false,
+        reason: "already have this block or an equal/later one",
+        alreadyHave: true,
+      };
     }
 
     const check = this.isValidNewBlock(block, latest);
@@ -227,36 +290,38 @@ export class Blockchain extends EventEmitter {
     this.chain.push(block);
     this.pruneMempool();
     this.persist();
-    this.emit('blocks');
+    this.emit("blocks");
     return { success: true };
   }
 
   /** Replays a whole candidate chain from genesis, returning the resulting state if valid. */
   validateChain(rawChain: any[]): ChainValidation {
     if (!Array.isArray(rawChain) || rawChain.length === 0) {
-      return { ok: false, reason: 'empty or non-array chain' };
+      return { ok: false, reason: "empty or non-array chain" };
     }
 
     let chain: Block[];
     try {
       chain = rawChain.map((b) => Block.fromPlain(b));
     } catch {
-      return { ok: false, reason: 'malformed block in chain' };
+      return { ok: false, reason: "malformed block in chain" };
     }
 
     // Must be rooted in the exact same genesis block as ours.
-    const expectedGenesisHash = Block.createGenesisBlock().hash;
+    const expectedGenesisHash = this.createGenesis().hash;
     if (chain[0].index !== 0 || chain[0].hash !== expectedGenesisHash) {
-      return { ok: false, reason: 'different genesis block' };
+      return { ok: false, reason: "different genesis block" };
     }
 
     const state = new WorldState(this.genesisAllocations);
     for (let i = 1; i < chain.length; i++) {
       const check = this.isValidNewBlock(chain[i], chain[i - 1]);
-      if (!check.valid) return { ok: false, reason: `block #${i}: ${check.reason}` };
+      if (!check.valid)
+        return { ok: false, reason: `block #${i}: ${check.reason}` };
 
       const txResult = this.applyBlockTransactions(chain[i], state);
-      if (!txResult.ok) return { ok: false, reason: `block #${i}: ${txResult.reason}` };
+      if (!txResult.ok)
+        return { ok: false, reason: `block #${i}: ${txResult.reason}` };
     }
     return { ok: true, chain, state };
   }
@@ -267,18 +332,24 @@ export class Blockchain extends EventEmitter {
 
   replaceChain(rawChain: any[]): { replaced: boolean; reason?: string } {
     if (!Array.isArray(rawChain) || rawChain.length <= this.chain.length) {
-      return { replaced: false, reason: 'received chain is not longer than current chain' };
+      return {
+        replaced: false,
+        reason: "received chain is not longer than current chain",
+      };
     }
     const result = this.validateChain(rawChain);
     if (!result.ok) {
-      return { replaced: false, reason: `received chain failed validation: ${result.reason}` };
+      return {
+        replaced: false,
+        reason: `received chain failed validation: ${result.reason}`,
+      };
     }
 
     this.chain = result.chain;
     this.state = result.state;
     this.pruneMempool();
     this.persist();
-    this.emit('blocks');
+    this.emit("blocks");
     return { replaced: true };
   }
 }

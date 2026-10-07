@@ -1,5 +1,6 @@
-import { sha256, sign, verify } from './crypto';
-import { Transaction } from './types';
+import { sha256, sign, verify } from "./crypto";
+import { Transaction } from "./types";
+import { GenesisAllocations } from "./state";
 
 export interface BlockData {
   index: number;
@@ -40,16 +41,31 @@ export class Block {
     return sha256(payload);
   }
 
-  static createGenesisBlock(): Block {
+  static createGenesisBlock(
+    allocations: GenesisAllocations = {},
+    validators: string[] = [],
+  ): Block {
+    // Commit to the network's starting config, so nodes with different
+    // balances or validator lists end up with different genesis hashes.
+    const configHash = sha256(
+      JSON.stringify({
+        // sort so the hash doesn't depend on object key order
+        allocations: Object.entries(allocations).sort(([a], [b]) =>
+          a < b ? -1 : a > b ? 1 : 0,
+        ),
+        validators, // order matters: it is the rotation order
+      }),
+    );
+
     const data: BlockData = {
       index: 0,
       timestamp: 0,
       transactions: [],
-      previousHash: '0'.repeat(64),
-      validatorPublicKey: 'genesis',
+      previousHash: configHash, // was '0'.repeat(64)
+      validatorPublicKey: "genesis",
     };
     const hash = Block.computeHash(data);
-    return new Block(data, hash, 'genesis-signature');
+    return new Block(data, hash, "genesis-signature");
   }
 
   /** Used by a validator to build and sign the next block. */
@@ -73,7 +89,7 @@ export class Block {
         validatorPublicKey: obj.validatorPublicKey,
       },
       obj.hash,
-      obj.signature
+      obj.signature,
     );
   }
 
