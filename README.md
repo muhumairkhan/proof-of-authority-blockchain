@@ -151,3 +151,9 @@ WALLET_PASSPHRASE=wp npm run wallet -- create bob
 VALIDATOR_KEY_PASSPHRASE=... npm start -- reset # wipes keys and data
 WALLET_PASSPHRASE=wp npm run wallet -- send alice bob 10
 npm run wallet -- balance bob
+
+Proposed new architecture:
+Browser ─sign─▶ LB ─▶ Full node A ──gossip──▶ Validators ──(slot owner builds block)
+▲ │ │
+│ └──── gossip ◀───────────┘
+└──── push (blocks/pending/status) ◀── Full node B (any node)
