@@ -231,6 +231,13 @@ export class Blockchain extends EventEmitter {
       };
     }
 
+    //
+    // CHECK for: A validator with a wrong system clock, or a malicious one,
+    // could sign a block timestamped a week ahead. Every node would accept it,
+    // and the chain would then reject every honest block until real time
+    // catches up, because their slots would count as “already used”.
+    //
+
     const MAX_FUTURE_DRIFT_MS = 2000;
 
     if (block.timestamp > Date.now() + MAX_FUTURE_DRIFT_MS) {
