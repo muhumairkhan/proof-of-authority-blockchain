@@ -231,6 +231,15 @@ export class Blockchain extends EventEmitter {
       };
     }
 
+    const MAX_FUTURE_DRIFT_MS = 2000;
+
+    if (block.timestamp > Date.now() + MAX_FUTURE_DRIFT_MS) {
+      return {
+        valid: false,
+        reason: "block timestamp is too far in the future",
+      };
+    }
+
     const expectedValidator = this.validatorSet.getValidatorForSlot(blockSlot);
     if (block.validatorPublicKey !== expectedValidator) {
       return {
