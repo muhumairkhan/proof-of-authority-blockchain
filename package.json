@@ -14,7 +14,8 @@
     "fullnode": "cross-env API_PORT=3099 P2P_PORT=6099 ts-node src/node.ts",
     "wallet": "ts-node scripts/wallet.ts",
     "test:p2p": "ts-node scripts/p2p-test.ts",
-    "test:chain": "ts-node scripts/chain-test.ts"
+    "test:chain": "ts-node scripts/chain-test.ts",
+    "test:wallet": "ts-node scripts/wallet-test.ts"
   },
   "dependencies": {
     "dotenv": "^17.4.2",

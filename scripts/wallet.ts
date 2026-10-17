@@ -1,47 +1,32 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { createKeystore, unlockKeystore, Keystore, KeyPair } from '../src/crypto';
-import { createSignedTransaction } from '../src/transaction';
-import 'dotenv/config';
+import { readFileSync, existsSync } from "fs";
+import { Wallet } from "../src/wallet";
+import { WalletStore } from "../src/walletStore";
+import { NodeClient } from "../src/nodeClient";
+import "dotenv/config";
 
 // Usage:
 //   WALLET_PASSPHRASE=... npm run wallet -- create alice
 //   WALLET_PASSPHRASE=... npm run wallet -- import ./exported-keystore.json alice
+//   npm run wallet -- list
 //   npm run wallet -- address alice
 //   npm run wallet -- balance alice            (or a raw 0x... address)
 //   WALLET_PASSPHRASE=... npm run wallet -- send alice bob 10
 //
-// Wallet files use the SAME keystore format as the frontend, so a keystore
-// exported from the frontend can be imported here and vice versa.
+// A thin wrapper around Wallet / WalletStore / NodeClient (src/). Keystores
+// use the SAME format as the frontend, so they can be moved back and forth.
 //
-// NODE_URL selects which node's API to talk to (default http://localhost:3000).
+// NODE_URL selects which node to talk to (default ws://localhost:3000;
+// http:// URLs are accepted and treated as ws://).
 
-const NODE_URL = process.env.NODE_URL || 'http://localhost:3000';
-const WALLET_DIR = 'wallets';
-
-function walletPath(name: string) {
-  return `${WALLET_DIR}/${name}.json`;
-}
-
-function loadWallet(name: string): Keystore {
-  const path = walletPath(name);
-  if (!existsSync(path)) {
-    console.error(`No wallet found at ${path}`);
-    process.exit(1);
-  }
-  return JSON.parse(readFileSync(path, 'utf-8'));
-}
-
-/** Accepts either a raw 0x address or the name of a local wallet. */
-function resolveAddress(nameOrAddress: string): string {
-  if (nameOrAddress.startsWith('0x')) return nameOrAddress.toLowerCase();
-  return loadWallet(nameOrAddress).address;
-}
+const store = new WalletStore("wallets");
+const client = new NodeClient(); // reads NODE_URL
 
 function requirePassphrase(): string {
   const passphrase = process.env.WALLET_PASSPHRASE;
   if (!passphrase) {
-    console.error('Missing WALLET_PASSPHRASE (used to encrypt/decrypt the wallet private key).');
-    process.exit(1);
+    throw new Error(
+      "Missing WALLET_PASSPHRASE (used to encrypt/decrypt the wallet private key).",
+    );
   }
   return passphrase;
 }
@@ -50,128 +35,83 @@ async function main() {
   const [cmd, ...args] = process.argv.slice(2);
 
   switch (cmd) {
-    case 'create': {
+    case "create": {
       const [name] = args;
       if (!name) return usage();
-      if (existsSync(walletPath(name))) {
-        console.error(`Wallet "${name}" already exists at ${walletPath(name)}`);
-        process.exit(1);
-      }
-      const ks = createKeystore(requirePassphrase(), name);
-      if (!existsSync(WALLET_DIR)) mkdirSync(WALLET_DIR);
-      writeFileSync(walletPath(name), JSON.stringify(ks, null, 2));
-      console.log(`Created ${walletPath(name)}`);
-      console.log(`Address: ${ks.address}`);
+      if (store.exists(name))
+        throw new Error(
+          `Wallet "${name}" already exists at ${store.path(name)}`,
+        );
+      const wallet = Wallet.create(requirePassphrase(), name);
+      console.log(`Created ${store.save(name, wallet)}`);
+      console.log(`Address: ${wallet.address}`);
       break;
     }
 
-    case 'import': {
+    case "import": {
       const [file, name] = args;
       if (!file || !name) return usage();
-      if (!existsSync(file)) {
-        console.error(`Keystore file not found: ${file}`);
-        process.exit(1);
-      }
-      if (existsSync(walletPath(name))) {
-        console.error(`Wallet "${name}" already exists at ${walletPath(name)}`);
-        process.exit(1);
-      }
-      let ks: any;
+      if (!existsSync(file))
+        throw new Error(`Keystore file not found: ${file}`);
+      if (store.exists(name))
+        throw new Error(
+          `Wallet "${name}" already exists at ${store.path(name)}`,
+        );
+      let raw: unknown;
       try {
-        ks = JSON.parse(readFileSync(file, 'utf-8'));
+        raw = JSON.parse(readFileSync(file, "utf-8"));
       } catch {
-        console.error('Keystore is not valid JSON');
-        process.exit(1);
+        throw new Error("Keystore is not valid JSON");
       }
-      try {
-        unlockKeystore(ks, requirePassphrase()); // proves passphrase + integrity
-      } catch (e) {
-        console.error(`Import failed: ${(e as Error).message}`);
-        process.exit(1);
-      }
-      if (!existsSync(WALLET_DIR)) mkdirSync(WALLET_DIR);
-      // Keep only the standard fields; store the original encrypted blob untouched.
-      const clean: Keystore = {
-        version: 1,
-        name,
-        address: ks.address,
-        publicKey: ks.publicKey,
-        encryptedPrivateKey: {
-          salt: ks.encryptedPrivateKey.salt,
-          iv: ks.encryptedPrivateKey.iv,
-          ciphertext: ks.encryptedPrivateKey.ciphertext,
-        },
-      };
-      writeFileSync(walletPath(name), JSON.stringify(clean, null, 2));
-      console.log(`Imported as ${walletPath(name)}`);
-      console.log(`Address: ${clean.address}`);
+      const wallet = Wallet.import(raw, requirePassphrase()); // proves passphrase + integrity
+      console.log(`Imported as ${store.save(name, wallet)}`);
+      console.log(`Address: ${wallet.address}`);
       break;
     }
 
-    case 'address': {
+    case "list": {
+      const names = store.list();
+      if (names.length === 0) console.log("(no wallets)");
+      for (const n of names) console.log(`${n}  ${store.load(n).address}`);
+      break;
+    }
+
+    case "address": {
       const [name] = args;
       if (!name) return usage();
-      console.log(loadWallet(name).address);
+      console.log(store.load(name).address);
       break;
     }
 
-    case 'balance': {
+    case "balance": {
       const [who] = args;
       if (!who) return usage();
-      const address = resolveAddress(who);
-      const res = await fetch(`${NODE_URL}/accounts/${address}`);
-      console.log(JSON.stringify(await res.json(), null, 2));
+      const account = await client.getAccount(store.resolveAddress(who));
+      console.log(JSON.stringify(account, null, 2));
       break;
     }
 
-    case 'send': {
+    case "send": {
       const [fromName, toWho, amountStr] = args;
       if (!fromName || !toWho || !amountStr) return usage();
-      const amount = Number(amountStr);
-      if (!Number.isSafeInteger(amount) || amount <= 0) {
-        console.error('amount must be a positive integer');
-        process.exit(1);
+      if (
+        !/^\d+$/.test(amountStr) ||
+        !Number.isSafeInteger(Number(amountStr)) ||
+        Number(amountStr) <= 0
+      ) {
+        throw new Error("amount must be a positive integer");
       }
 
-      const wallet = loadWallet(fromName);
-      let keys: KeyPair & { address: string };
-      try {
-        keys = unlockKeystore(wallet, requirePassphrase());
-      } catch (e) {
-        console.error(`Failed to unlock wallet: ${(e as Error).message}`);
-        process.exit(1);
-      }
-
-      const to = resolveAddress(toWho);
-      if (!/^0x[0-9a-f]{40}$/.test(to)) {
-        console.error('recipient must be a wallet name or a lowercase 0x + 40 hex address');
-        process.exit(1);
-      }
-
-      // Ask the node for the next usable nonce (counts this account's pending txs too).
-      const acctRes = await fetch(`${NODE_URL}/accounts/${keys.address}`);
-      const acct = (await acctRes.json()) as { nextNonce: number };
-
-      console.log(acct);
-
-      const tx = createSignedTransaction(
-        {
-          from: keys.address,
-          to,
-          amount,
-          nonce: acct.nextNonce,
-          timestamp: Date.now(),
-        },
-        keys.publicKey,
-        keys.privateKey
+      const wallet = store.load(fromName).unlock(requirePassphrase());
+      const tx = await client.send(
+        wallet,
+        store.resolveAddress(toWho),
+        Number(amountStr),
       );
-
-      const res = await fetch(`${NODE_URL}/transactions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(tx),
-      });
-      console.log(res.status, JSON.stringify(await res.json(), null, 2));
+      console.log(`Submitted ${tx.hash}`);
+      console.log(
+        `${tx.from} -> ${tx.to}  amount ${tx.amount}  nonce ${tx.nonce}`,
+      );
       break;
     }
 
@@ -180,19 +120,20 @@ async function main() {
   }
 }
 
-function usage() {
+function usage(): never {
   console.error(
-    'Usage:\n' +
-    '  npm run wallet -- create <name>\n' +
-    '  npm run wallet -- import <keystore.json> <name>\n' +
-    '  npm run wallet -- address <name>\n' +
-    '  npm run wallet -- balance <name|0xaddress>\n' +
-    '  npm run wallet -- send <fromName> <toName|0xaddress> <amount>'
+    "Usage:\n" +
+      "  npm run wallet -- create <name>\n" +
+      "  npm run wallet -- import <keystore.json> <name>\n" +
+      "  npm run wallet -- list\n" +
+      "  npm run wallet -- address <name>\n" +
+      "  npm run wallet -- balance <name|0xaddress>\n" +
+      "  npm run wallet -- send <fromName> <toName|0xaddress> <amount>",
   );
   process.exit(1);
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 });
