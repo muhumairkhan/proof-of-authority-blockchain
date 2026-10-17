@@ -1,159 +1,118 @@
-# Proof of Authority (PoA) Blockchain (TypeScript)
+# PoA Blockchain (TypeScript)
 
-A minimal, multi-node Proof-of-Authority blockchain implementation. It
-implements the core mechanics of a blockchain — hashing, signatures, chain
-validation, P2P gossip, and fork resolution — without the added complexity
-of mining or staking. See the "Where this goes next" section for how to
-layer Proof-of-Stake on top of this same codebase.
+A minimal **Proof-of-Authority blockchain** built from scratch in TypeScript, with a React console to watch and use it. It is an educational project: small enough to read in an afternoon, but it includes the parts that tutorials usually skip, such as peer discovery, signed keystores, atomic state replay and a test suite for consensus and networking.
 
-## Project structure
+![PoA Node Console](docs/screenshot.png)
 
-```
-src/
-  types.ts          Transaction shape
-  crypto.ts         hashing, keypair generation, signing/verification, and
-                     AES-256-GCM encryption of private keys at rest
-  block.ts          Block class: hash/sign/validate a single block
-  validatorSet.ts   round-robin logic: whose turn is it to sign block N?
-  blockchain.ts     chain state, validation rules, longest-valid-chain fork
-                     resolution, and snapshot persistence via storage.ts
-  storage.ts        crash-safe load/save of chain + pending tx to a JSON file
-  p2p.ts            WebSocket networking: peer sync, block/tx gossip
-  api.ts            REST API: submit transactions, inspect chain, propose blocks
-  node.ts           entry point that wires everything together for one process
-scripts/
-  generate-keys.ts  generates the shared validator keypairs (private keys
-                     encrypted at rest; requires VALIDATOR_KEY_PASSPHRASE)
-  reset.ts          wipes keys/ and data/, then regenerates keys
-  start.ts          reads keys/validators-public.json and spawns one node
-                     process per validator automatically
-```
+_The console: node status with the slot countdown, peers (switchable between the full node and each validator), transaction form, mempool and blocks._
 
-## Setup
+**Frontend repo:** [muhumairkhan/react-blockchain-frontend](https://github.com/muhumairkhan/react-blockchain-frontend)
+
+## Features
+
+- **Time-slot PoA consensus:** the owner of each slot is `validators[slot % n]`, computed from the wall clock alone, so there is no leader election and no liveness tracking. A down validator's slot is simply skipped.
+- **Account model:** balances and nonces, with signed transfers (ECDSA secp256k1). State is derived by replaying the chain from genesis, never stored.
+- **Genesis commitment:** the genesis hash covers the starting balances and validator order, so nodes with different configs refuse each other.
+- **P2P mesh over WebSockets:** bootnode discovery, peer exchange, a HELLO handshake that checks genesis and slot parameters, duplicate-connection resolution, heartbeats and reconnect backoff.
+- **Longest valid chain wins:** a received chain is fully replayed before it replaces the local one.
+- **Encrypted keystores:** AES-256-GCM with PBKDF2, in a format shared with the frontend wallet.
+- **WebSocket API with live subscriptions** (`status`, `blocks`, `pending`, `peers`) used by the console.
+- **Wallet library + CLI:** a `Wallet` class (locked/unlocked), a `WalletStore`, and a `NodeClient`, with a thin CLI on top.
+- **Tests** for consensus rules, p2p behaviour and the wallet layer.
+
+## Quick start
+
+Requires Node.js 18+ (20+ recommended).
 
 ```bash
+git clone https://github.com/muhumairkhan/proof-of-authority-blockchain
+cd proof-of-authority-blockchain
 npm install
 
-# Private keys are encrypted at rest (AES-256-GCM, key derived from this
-# passphrase via scrypt). Pick a passphrase and keep it — you'll need the
-# exact same one every time you start a validator node.
-VALIDATOR_KEY_PASSPHRASE="correct horse battery staple" npm run generate-keys
-```
+# 1. Create 3 validators, a funded test wallet, and the genesis file
+VALIDATOR_KEY_PASSPHRASE="correct horse battery staple" NUM_VALIDATORS=3 npm run reset
 
-This creates `keys/validator-0.json`, `keys/validator-1.json`,
-`keys/validator-2.json` (each holding a public key plus an encrypted private
-key blob — never plaintext) and `keys/validators-public.json` (the shared
-rotation order every node uses to agree on the validator set and whose turn
-it is).
-
-In a real deployment `keys/validators-public.json` would be distributed
-out-of-band (e.g. hardcoded in a genesis config); here it's just a shared
-file since everything runs locally.
-
-> Note: the number of validator keypairs generated is controlled by
-> `NUM_VALIDATORS` in `scripts/generate-keys.ts`. Set it to match the number
-> of validator nodes you intend to run (the 3-node example below expects
-> `NUM_VALIDATORS = 3`).
-
-Chain state is also persisted: each node writes its chain and pending
-transactions to `data/chain-<p2p-port>.json` (crash-safe write via a temp
-file + rename) and restores from it automatically on the next start. Run
-`npm run reset` to wipe both `keys/` and `data/` and regenerate fresh keys
-in one step.
-
-## Running a 3-node network
-
-### Option A — manual, one terminal per node
-
-Open three terminals:
-
-```bash
-npm run node1   # validator #0, API on :3000, P2P on :6000
-npm run node2   # validator #1, API on :3001, P2P on :6001
-npm run node3   # validator #2, API on :3002, P2P on :6002
-```
-
-Each node connects to the other two over WebSocket and syncs chains
-automatically on connect. Optionally add a 4th, non-validating observer node:
-
-```bash
-npm run fullnode   # API on :3003, P2P on :6003 — just syncs and relays
-```
-
-Every node needs `VALIDATOR_KEY_PASSPHRASE` set in its environment (or a
-`.env` file) so it can decrypt its own key — a node will fail fast with a
-clear error if it's missing.
-
-### Option B — automatic, one command
-
-`scripts/start.ts` reads `keys/validators-public.json` and spawns one node
-process per validator for you, wiring up API/P2P ports and peer lists
-automatically:
-
-```bash
+# 2. Start the validators (API :3000-3002, P2P :6000-6002)
 VALIDATOR_KEY_PASSPHRASE="correct horse battery staple" npm start
+
+# 3. In another terminal: start a full node (API :3099, P2P :6099)
+npm run fullnode
 ```
 
-Pass `reset` to wipe keys/data and regenerate keys before starting, going
-from zero to a running network in one command:
+Then start the frontend (it talks to the full node at `http://localhost:3099` by default):
 
 ```bash
-VALIDATOR_KEY_PASSPHRASE="correct horse battery staple" npm start -- reset
+git clone https://github.com/muhumairkhan/react-blockchain-frontend
+cd react-blockchain-frontend
+npm install
+npm run dev
 ```
 
-Ports default to API `3000+` / P2P `6000+` (one pair per validator, in
-order) and can be shifted with `BASE_API_PORT` / `BASE_P2P_PORT`. Ctrl-C
-stops all spawned nodes together.
+Send a transaction from the command line:
 
-## Trying it out
+```bash
+# `reset` created a wallet named "test" (passphrase "test") with 1000 coins
+WALLET_PASSPHRASE=test npm run wallet -- create bob   # use any passphrase for bob
+npm run wallet -- balance test
+WALLET_PASSPHRASE=test npm run wallet -- send test bob 10
+```
 
-1. **Submit a transaction** to any node:
+A block appears once the next slot's owner is out of its wait period (default: 15 s slots, 3 s wait). To use a wallet created in the browser, run `GENESIS_ADDRESS=0x... npm run reset` to fund it at genesis. To use the CLI's `test` wallet in the browser, import `wallets/test.json` on the Wallet page.
 
-   ```bash
-   curl -X POST http://localhost:3000/transactions \
-     -H "Content-Type: application/json" \
-     -d '{"from": "alice", "to": "bob", "amount": 10}'
-   ```
+## Project layout
 
-   This gets gossiped to all connected peers automatically.
+```
+src/        core: blockchain, blocks, state, p2p, API, wallet layer
+scripts/    generate-keys, reset, start, wallet CLI, and the test suites
+docs/       architecture, protocol rules, roadmap
+keys/       validator keystores (generated, do not commit)
+data/       chain snapshots, peer tables, genesis.json (generated)
+wallets/    CLI wallets (generated, do not commit)
+```
 
-2. **Check whose turn it is** — with 3 validators, block index 1 belongs to
-   validator 0, index 2 to validator 1, index 3 to validator 2, then it
-   repeats. Trigger the correct node to propose:
+## Commands
 
-   ```bash
-   curl -X POST http://localhost:3000/propose
-   ```
+| Command                             | What it does                                                         |
+| ----------------------------------- | -------------------------------------------------------------------- |
+| `npm run reset`                     | Wipe `keys/ data/ wallets/` and regenerate everything                |
+| `npm run generate-keys`             | Create validator keystores only                                      |
+| `npm start`                         | Start all validators (`npm start -- reset` resets first)             |
+| `npm run node1` / `node2` / `node3` | Start a single validator                                             |
+| `npm run fullnode`                  | Start a non-validating full node                                     |
+| `npm run wallet -- <cmd>`           | Wallet CLI: `create`, `import`, `list`, `address`, `balance`, `send` |
+| `npm run test:chain`                | Consensus rules (offline)                                            |
+| `npm run test:p2p`                  | PeerTable unit tests + real nodes over real sockets                  |
+| `npm run test:wallet`               | Wallet, WalletStore and NodeClient                                   |
+| `npm run build`                     | Compile with `tsc`                                                   |
 
-   If you call `/propose` on the wrong node, you'll get a 409 explaining it's
-   not that validator's turn — this is the core PoA rule in action.
+Key environment variables are listed in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#configuration). The most important ones: `VALIDATOR_KEY_PASSPHRASE`, `NUM_VALIDATORS`, `BLOCK_TIMEOUT_MS` and `SLOT_WAIT_MS` (the last two must be identical on every node), and `NODE_URL` for the CLI.
 
-3. **Watch the block propagate** — check any other node's chain:
+## Documentation
 
-   ```bash
-   curl http://localhost:3001/blocks
-   ```
+| Doc                                          | Contents                                                                                   |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together, file by file, plus configuration                              |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md)         | The exact rules every node and client must agree on: hashes, consensus, keystore, API, p2p |
+| [docs/TODO.md](docs/TODO.md)                 | Roadmap and known gaps                                                                     |
 
-   You should see the new block appear there too, without ever posting to
-   port 3001 directly.
+## Limitations
 
-4. **See overall status**:
-   ```bash
-   curl http://localhost:3000/status
-   ```
+This is a learning project, not a production system. Known gaps:
 
-**Testing Wallets and Balance**:
-WALLET_PASSPHRASE=wp npm run wallet -- create alice
-WALLET_PASSPHRASE=wp npm run wallet -- create bob
+- **No replay protection:** a transaction's signature does not include a chain ID, so it could be replayed on another chain with the same account and nonce. Planned.
+- **No finality or fork choice** beyond "longest valid chain".
+- **Clock-dependent:** slot ownership depends on synchronised wall clocks (with a 2 s future-drift guard).
+- **Whole-chain sync:** new peers and rejected blocks trigger full-chain transfers.
+- **Unbounded mempool, no fees,** and a fixed validator set.
+- **JSON snapshot storage** rewritten on every block.
+- **Not audited.** Do not use real keys or value.
 
-# put alice's address into genesis.json as {"0x...": 1000}
+See [docs/TODO.md](docs/TODO.md) for the plan.
 
-VALIDATOR_KEY_PASSPHRASE=... npm start -- reset # wipes keys and data
-WALLET_PASSPHRASE=wp npm run wallet -- send alice bob 10
-npm run wallet -- balance bob
+## Tech stack
 
-Proposed new architecture:
-Browser ─sign─▶ LB ─▶ Full node A ──gossip──▶ Validators ──(slot owner builds block)
-▲ │ │
-│ └──── gossip ◀───────────┘
-└──── push (blocks/pending/status) ◀── Full node B (any node)
+Node.js, TypeScript, `ws`, `ts-node`, and Node's built-in `crypto` for core. React with `react-router` for the console.
+
+## License
+
+[MIT](LICENSE)
