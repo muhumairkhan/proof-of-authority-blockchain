@@ -1,6 +1,6 @@
 # PoA Blockchain (TypeScript)
 
-A minimal **Proof-of-Authority blockchain** built from scratch in TypeScript, with a React console to watch and use it. It is an educational project: small enough to read in an afternoon, but it includes the parts that tutorials usually skip, such as peer discovery, signed keystores, atomic state replay and a test suite for consensus and networking.
+A minimal **Proof-of-Authority blockchain** built from scratch in TypeScript, with a React console to watch and use it. It is an educational project: includes parts such as peer discovery, signed keystores, atomic state replay and a test suite for consensus and networking.
 
 ![PoA Node Console](docs/screenshot.png)
 
