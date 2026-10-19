@@ -3,7 +3,7 @@
 The rules every node, script and the frontend must agree on. If you change
 anything here, update the core **and** the frontend, then run `npm run reset`
 (old chains/txs/keystores may stop verifying).
-Last updated: 2026-10-17.
+Last updated: 2026-10-19.
 
 ---
 
@@ -29,9 +29,32 @@ Last updated: 2026-10-17.
   - `addressFromPublicKey(publicKey) === from`
   - recomputed hash equals `hash`; signature verifies
 - Stateful validity (`WorldState.applyAll`): `nonce` equals the sender's current nonce, and `balance >= amount`. A tx that passes bumps the sender's nonce by 1; the receiver account is created implicitly.
-- No fees. Mempool also rejects duplicates, already-used nonces, a second pending tx with the same `(from, nonce)`, and insufficient balance.
+- No fees.
 
 > **Known gap:** the hash has no chain ID, so a tx signed for one chain is valid on another with the same account and nonce. Planned fix in `TODO.md` (replay protection).
+
+### Mempool policy (local, NOT consensus)
+
+These rules decide what a node accepts into its own pending pool and what it
+proposes. They are **not** checked in `isValidNewBlock`, so nodes may use
+different values without forking, and changing them needs no reset.
+Defaults (`DEFAULT_MEMPOOL_OPTIONS` in `blockchain.ts`):
+
+| Rule                                                                        | Default | Rejection reason                                              |
+| --------------------------------------------------------------------------- | ------- | ------------------------------------------------------------- |
+| Max pending txs in the pool                                                 | 5000    | `mempool is full`                                             |
+| Duplicate `hash`                                                            | —       | `duplicate transaction`                                       |
+| `nonce` below the confirmed nonce                                           | —       | `nonce already used`                                          |
+| Second pending tx with the same `(from, nonce)`                             | —       | `another pending tx from this sender already uses this nonce` |
+| Max pending txs per sender                                                  | 64      | `too many pending txs from this sender`                       |
+| Nonce window: `nonce < confirmedNonce + maxPendingPerSender`                | 64      | `nonce too far ahead`                                         |
+| Cumulative spend: sender's pending amounts + this tx `<= confirmed balance` | —       | `insufficient balance (including pending txs)`                |
+
+- **Check order:** pool size and duplicate hash are checked _before_ signature verification, so a flood doesn't cost an ECDSA verify per tx.
+- **Expiry:** a pending tx is dropped 10 minutes (`txTtlMs`) after the node _received_ it. Local arrival time is used, never `tx.timestamp`, which the sender controls. Arrival times are not persisted: txs restored from disk get a fresh 10 minutes.
+- **Pruning** (after every block, after a chain replacement, and every 30 s via `sweepMempool()`): drops txs whose nonce was consumed on-chain, expired txs, and txs the sender can no longer afford on top of their lower-nonce pending txs.
+- **Restart:** pending txs loaded from `data/chain-*.json` are re-verified (signature and shape) and pruned before use.
+- **Block size:** a proposer includes at most 500 txs (`maxTxsPerBlock`), lowest nonces first. This is a proposer-side limit only. Other nodes accept larger blocks.
 
 ## 3. Blocks
 
@@ -63,7 +86,7 @@ Defaults: `slotDurationMs = 15000`, `slotWaitMs = 3000` (`0 <= slotWaitMs < slot
 
 **Chain selection:** a received chain replaces ours only if it is **strictly longer** and fully replays from genesis (same genesis hash, every block and tx valid). There is no fork-choice beyond length.
 
-**Proposing (not a consensus rule):** a validator proposes when the mempool is non-empty, the wait period is over, the current slot is unused and it owns the slot. If an owner is down, that slot is simply skipped.
+**Proposing (not a consensus rule):** a validator proposes when the mempool is non-empty, the wait period is over, the current slot is unused and it owns the slot. It includes at most `maxTxsPerBlock` valid txs (see mempool policy). If an owner is down, that slot is simply skipped.
 
 ## 5. Keystore (shared with the frontend)
 
@@ -107,11 +130,11 @@ Invalid JSON or a non-object request gets `{ error: { message, code: 400 } }` (n
 | `getValidators`             | —                   | key-file contents minus `encryptedPrivateKey` (includes `node` ports)                                                                                                                     |
 | `getPeers`                  | —                   | `{ nodeId, p2pPort, connected: [{address, nodeId, direction}], known: [{address, lastSeen, failures}] }`                                                                                  |
 | `getAccount`                | `{ address }`       | `{ address, balance, nonce, nextNonce }` (`nextNonce` counts contiguous pending txs)                                                                                                      |
-| `submitTransaction`         | `{ transaction }`   | `{ success, transaction }`; only the 8 known tx fields are kept                                                                                                                           |
+| `submitTransaction`         | `{ transaction }`   | `{ success, transaction }`; only the 8 known tx fields are kept. Errors with 400 and the mempool rejection reason (section 2) if the tx is refused                                        |
 | `propose`                   | —                   | forces a proposal if it is this validator's turn (testing); errors 429 (wait period), 409 (slot used / not your turn), 400 (no keys / nothing to include)                                 |
 | `subscribe` / `unsubscribe` | `{ topics: [...] }` | `{ subscribed: [...] }`                                                                                                                                                                   |
 
-Topics: `status`, `blocks`, `pending`, `peers`. On subscribe the server pushes a snapshot of each topic, then pushes again on change (`status` ticks every second; `peers` only when changed).
+Topics: `status`, `blocks`, `pending`, `peers`. On subscribe the server pushes a snapshot of each topic, then pushes again on change (`status` ticks every second; `peers` only when changed). `pending` also changes when stale txs are swept.
 
 Error codes: 400 bad request, 404 unknown method, 409 / 429 propose conflicts, 500 internal.
 
@@ -119,13 +142,13 @@ Error codes: 400 bad request, 404 unknown method, 409 / 429 propose conflicts, 5
 
 JSON messages over WebSocket:
 
-| Type                               | Fields                                                     |
-| ---------------------------------- | ---------------------------------------------------------- |
-| `HELLO`                            | `nodeId, p2pPort, genesisHash, slotDurationMs, slotWaitMs` |
-| `GET_PEERS` / `PEERS`              | `addresses: string[]` (max 50)                             |
-| `CHAIN_REQUEST` / `CHAIN_RESPONSE` | `chain` (whole chain)                                      |
-| `NEW_BLOCK`                        | `block`                                                    |
-| `NEW_TRANSACTION`                  | `transaction`                                              |
+| Type                               | Fields                                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------------------------- |
+| `HELLO`                            | `nodeId, p2pPort, genesisHash, slotDurationMs, slotWaitMs`                                  |
+| `GET_PEERS` / `PEERS`              | `addresses: string[]` (max 50)                                                              |
+| `CHAIN_REQUEST` / `CHAIN_RESPONSE` | `chain` (whole chain)                                                                       |
+| `NEW_BLOCK`                        | `block`                                                                                     |
+| `NEW_TRANSACTION`                  | `transaction` (subject to each receiver's mempool policy; a refused tx is not re-broadcast) |
 
 - A socket is usable only after both sides exchange a compatible `HELLO` (within 5 s). Everything else before that is ignored.
 - **Compatible** = same `genesisHash`, same `slotDurationMs`, same `slotWaitMs`, different `nodeId` (self-dials are rejected). Incompatible addresses are blocked.
@@ -140,3 +163,5 @@ JSON messages over WebSocket:
 - Changing PBKDF2 iterations, cipher, or the tag-appended layout
 - Different `BLOCK_TIMEOUT_MS` / `SLOT_WAIT_MS` / genesis / validator order between nodes
 - Frontend signing code diverging from `computeTxHash` (check `lib/transaction` whenever the core's tx format changes)
+
+Not on this list: mempool limits (section 2). They are local policy and may differ per node.
