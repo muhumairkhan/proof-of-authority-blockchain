@@ -10,12 +10,36 @@ type ChainValidation =
   | { ok: true; chain: Block[]; state: WorldState }
   | { ok: false; reason: string };
 
+/**
+ * Mempool policy. LOCAL to each node, NOT consensus: nodes may use different
+ * values without disagreeing about the chain, so no protocol change or reset.
+ */
+export interface MempoolOptions {
+  maxPoolSize: number; // total pending txs
+  maxPendingPerSender: number; // pending txs per sender (also the nonce window)
+  maxTxsPerBlock: number; // proposer-side cap when building a block
+  txTtlMs: number; // pending tx expires this long after LOCAL arrival
+  now: () => number; // clock (injectable for tests)
+}
+
+export const DEFAULT_MEMPOOL_OPTIONS: MempoolOptions = {
+  maxPoolSize: 5000,
+  maxPendingPerSender: 64,
+  maxTxsPerBlock: 500,
+  txTtlMs: 10 * 60_000,
+  now: () => Date.now(),
+};
+
 export class Blockchain extends EventEmitter {
   chain: Block[];
   validatorSet: ValidatorSet;
   pendingTransactions: Transaction[] = [];
   private dataFile?: string;
   private genesisAllocations: GenesisAllocations;
+  private mempool: MempoolOptions;
+
+  // tx.hash -> local arrival time. Not tx.timestamp: the sender controls that.
+  private receivedAt = new Map<string, number>();
 
   // Balances + nonces, derived from the chain. Kept in memory only.
   private state: WorldState;
@@ -33,6 +57,7 @@ export class Blockchain extends EventEmitter {
     slotDurationMs = 15000,
     slotWaitMs = 3000,
     genesisAllocations: GenesisAllocations = {},
+    mempoolOptions: Partial<MempoolOptions> = {},
   ) {
     super();
 
@@ -47,6 +72,7 @@ export class Blockchain extends EventEmitter {
     this.slotDurationMs = slotDurationMs;
     this.slotWaitMs = slotWaitMs;
     this.genesisAllocations = genesisAllocations;
+    this.mempool = { ...DEFAULT_MEMPOOL_OPTIONS, ...mempoolOptions };
 
     const snapshot = dataFile ? loadSnapshot(dataFile) : null;
     const restored = snapshot ? this.validateChain(snapshot.chain) : null;
@@ -54,7 +80,7 @@ export class Blockchain extends EventEmitter {
     if (snapshot && restored && restored.ok) {
       this.chain = restored.chain;
       this.state = restored.state;
-      this.pendingTransactions = snapshot.pendingTransactions;
+      this.restorePending(snapshot.pendingTransactions);
       console.log(
         `[storage] Restored ${this.chain.length} blocks (${this.pendingTransactions.length} pending tx) from ${dataFile}`,
       );
@@ -114,31 +140,68 @@ export class Blockchain extends EventEmitter {
 
   // --- Mempool -----------------------------------------------------------
 
+  /**
+   * Re-validates pending txs loaded from disk (the file is untrusted), then
+   * applies the normal pruning rules. Restored txs get a fresh TTL.
+   */
+  private restorePending(raw: any[]) {
+    const now = this.mempool.now();
+    const seen = new Set<string>();
+    const kept: Transaction[] = [];
+    for (const tx of raw) {
+      if (!verifyTransaction(tx).valid) continue;
+      if (seen.has(tx.hash)) continue;
+      seen.add(tx.hash);
+      kept.push(tx);
+      this.receivedAt.set(tx.hash, now);
+    }
+    this.pendingTransactions = kept;
+    this.pruneMempool();
+  }
+
   addTransaction(tx: Transaction): { added: boolean; reason?: string } {
+    // Cheap checks first, so a flood doesn't cost an ECDSA verify per tx.
+    if (this.pendingTransactions.length >= this.mempool.maxPoolSize) {
+      return { added: false, reason: "mempool is full" };
+    }
+    if (this.pendingTransactions.some((t) => t.hash === tx?.hash)) {
+      return { added: false, reason: "duplicate transaction" };
+    }
+
     const check = verifyTransaction(tx);
     if (!check.valid) return { added: false, reason: check.reason };
 
-    if (this.pendingTransactions.some((t) => t.hash === tx.hash)) {
-      return { added: false, reason: "duplicate transaction" };
-    }
-    if (tx.nonce < this.state.getNonce(tx.from)) {
+    const confirmedNonce = this.state.getNonce(tx.from);
+    if (tx.nonce < confirmedNonce) {
       return { added: false, reason: "nonce already used" };
     }
-    if (
-      this.pendingTransactions.some(
-        (t) => t.from === tx.from && t.nonce === tx.nonce,
-      )
-    ) {
+
+    const mine = this.pendingTransactions.filter((t) => t.from === tx.from);
+    if (mine.some((t) => t.nonce === tx.nonce)) {
       return {
         added: false,
         reason: "another pending tx from this sender already uses this nonce",
       };
     }
-    if (this.state.getBalance(tx.from) < tx.amount) {
-      return { added: false, reason: "insufficient balance" };
+    if (mine.length >= this.mempool.maxPendingPerSender) {
+      return { added: false, reason: "too many pending txs from this sender" };
+    }
+    // Nonce window: a huge gap can never become includable.
+    if (tx.nonce >= confirmedNonce + this.mempool.maxPendingPerSender) {
+      return { added: false, reason: "nonce too far ahead" };
+    }
+
+    // Cumulative: everything this sender already has pending + this tx.
+    const pendingTotal = mine.reduce((sum, t) => sum + t.amount, 0);
+    if (this.state.getBalance(tx.from) < pendingTotal + tx.amount) {
+      return {
+        added: false,
+        reason: "insufficient balance (including pending txs)",
+      };
     }
 
     this.pendingTransactions.push(tx);
+    this.receivedAt.set(tx.hash, this.mempool.now());
     this.persist();
     this.emit("pending");
     return { added: true };
@@ -146,7 +209,8 @@ export class Blockchain extends EventEmitter {
 
   /**
    * Picks the mempool txs that would actually be valid in the next block,
-   * in an order that respects each sender's nonce sequence.
+   * in an order that respects each sender's nonce sequence. Capped at
+   * maxTxsPerBlock (proposer-side limit, not a consensus rule).
    */
   selectTransactionsForBlock(): Transaction[] {
     const sim = this.state.clone();
@@ -155,16 +219,60 @@ export class Blockchain extends EventEmitter {
     );
     const selected: Transaction[] = [];
     for (const tx of sorted) {
+      if (selected.length >= this.mempool.maxTxsPerBlock) break;
       if (sim.applyAll([tx]).ok) selected.push(tx);
     }
     return selected;
   }
 
-  /** Drops txs whose nonce has already been consumed on-chain. */
+  /**
+   * Drops txs that can no longer be included or have been waiting too long:
+   *  - nonce already consumed on-chain
+   *  - expired (TTL since local arrival)
+   *  - sender can't afford it on top of their lower-nonce pending txs
+   */
   private pruneMempool() {
-    this.pendingTransactions = this.pendingTransactions.filter(
-      (t) => t.nonce >= this.state.getNonce(t.from),
+    const now = this.mempool.now();
+    const sorted = [...this.pendingTransactions].sort(
+      (a, b) => a.nonce - b.nonce || a.timestamp - b.timestamp,
     );
+    const spent = new Map<string, number>(); // sender -> total kept so far
+    const keep: Transaction[] = [];
+
+    for (const t of sorted) {
+      if (t.nonce < this.state.getNonce(t.from)) continue; // already used
+      const arrived = this.receivedAt.get(t.hash) ?? now;
+      if (now - arrived > this.mempool.txTtlMs) continue; // expired
+      const total = (spent.get(t.from) ?? 0) + t.amount;
+      if (total > this.state.getBalance(t.from)) continue; // can't afford
+      spent.set(t.from, total);
+      keep.push(t);
+    }
+
+    const keepHashes = new Set(keep.map((t) => t.hash));
+    for (const h of [...this.receivedAt.keys()]) {
+      if (!keepHashes.has(h)) this.receivedAt.delete(h);
+    }
+
+    // Preserve original arrival order of the survivors.
+    this.pendingTransactions = this.pendingTransactions.filter((t) =>
+      keepHashes.has(t.hash),
+    );
+  }
+
+  /**
+   * Time-driven cleanup (expiry never triggers on an idle chain otherwise).
+   * Call from a timer. Persists and emits "pending" only if something changed.
+   */
+  sweepMempool(): number {
+    const before = this.pendingTransactions.length;
+    this.pruneMempool();
+    const removed = before - this.pendingTransactions.length;
+    if (removed > 0) {
+      this.persist();
+      this.emit("pending");
+    }
+    return removed;
   }
 
   // --- Slots -------------------------------------------------------------

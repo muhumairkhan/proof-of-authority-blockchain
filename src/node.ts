@@ -1,13 +1,13 @@
-import { readFileSync, existsSync } from 'fs';
-import { Blockchain } from './blockchain';
-import { ValidatorSet } from './validatorSet';
-import { P2PNode } from './p2p';
-import { startApi } from './api';
-import { Block } from './block';
-import { KeyPair, unlockKeystore } from './crypto';
-import { discoverValidatorNodes, NodeInfo } from './nodeInfo';
-import { PeerTable, normalizeAddress } from './peerTable';
-import 'dotenv/config';
+import { readFileSync, existsSync } from "fs";
+import { Blockchain } from "./blockchain";
+import { ValidatorSet } from "./validatorSet";
+import { P2PNode } from "./p2p";
+import { startApi } from "./api";
+import { Block } from "./block";
+import { KeyPair, unlockKeystore } from "./crypto";
+import { discoverValidatorNodes, NodeInfo } from "./nodeInfo";
+import { PeerTable, normalizeAddress } from "./peerTable";
+import "dotenv/config";
 
 // --- Network identity -----------------------------------------------------
 // A validator's own ports live in its key file (keys/validator-N.json, written
@@ -18,14 +18,16 @@ import 'dotenv/config';
 // Finding OTHER nodes is not done from key files: this node dials the
 // bootnode(s), asks them for their peers, and dials those (see p2p.ts).
 // BOOTNODES is a comma-separated list; the default is the first validator.
-if (!existsSync('keys/validators-public.json')) {
-  console.error('Missing keys/validators-public.json — run `npm run generate-keys` first.');
+if (!existsSync("keys/validators-public.json")) {
+  console.error(
+    "Missing keys/validators-public.json — run `npm run generate-keys` first.",
+  );
   process.exit(1);
 }
 
 let knownNodes: NodeInfo[];
 try {
-  knownNodes = discoverValidatorNodes('keys');
+  knownNodes = discoverValidatorNodes("keys");
 } catch (err) {
   console.error(`[node] ${(err as Error).message}`);
   process.exit(1);
@@ -37,7 +39,9 @@ let self: NodeInfo | undefined;
 if (VALIDATOR_INDEX !== undefined) {
   self = knownNodes.find((n) => n.validatorIndex === Number(VALIDATOR_INDEX));
   if (!self) {
-    console.error(`[node] No key file found for validator ${VALIDATOR_INDEX} in keys/ (found: ${knownNodes.map((n) => n.validatorIndex).join(', ') || 'none'})`);
+    console.error(
+      `[node] No key file found for validator ${VALIDATOR_INDEX} in keys/ (found: ${knownNodes.map((n) => n.validatorIndex).join(", ") || "none"})`,
+    );
     process.exit(1);
   }
 }
@@ -47,20 +51,24 @@ const P2P_PORT = self?.p2pPort ?? Number(process.env.P2P_PORT || 6000);
 const DATA_FILE = process.env.DATA_FILE || `data/chain-${P2P_PORT}.json`;
 const PEERS_FILE = process.env.PEERS_FILE || `data/peers-${P2P_PORT}.json`;
 
-const BOOTNODES = (process.env.BOOTNODES || 'ws://localhost:6000')
-  .split(',')
+const BOOTNODES = (process.env.BOOTNODES || "ws://localhost:6000")
+  .split(",")
   .map((s) => s.trim())
   .filter(Boolean)
   .map((raw) => {
     const address = normalizeAddress(raw);
     if (!address) {
-      console.error(`[node] Invalid BOOTNODES entry "${raw}" (expected ws://host:port)`);
+      console.error(
+        `[node] Invalid BOOTNODES entry "${raw}" (expected ws://host:port)`,
+      );
       process.exit(1);
     }
     return address;
   });
 
-console.log(`[node] API :${API_PORT}  P2P :${P2P_PORT}  bootnodes: [${BOOTNODES.join(', ')}]`);
+console.log(
+  `[node] API :${API_PORT}  P2P :${P2P_PORT}  bootnodes: [${BOOTNODES.join(", ")}]`,
+);
 
 // Fixed width of a time slot in ms. Ownership of each slot cycles through
 // the validator set based purely on wall-clock time (see
@@ -73,7 +81,9 @@ const BLOCK_TIMEOUT_MS = Number(process.env.BLOCK_TIMEOUT_MS || 15000);
 // BLOCK_TIMEOUT_MS, this MUST match on every node.
 const SLOT_WAIT_MS = Number(process.env.SLOT_WAIT_MS || 3000);
 
-const publicKeys: string[] = JSON.parse(readFileSync('keys/validators-public.json', 'utf-8'));
+const publicKeys: string[] = JSON.parse(
+  readFileSync("keys/validators-public.json", "utf-8"),
+);
 const validatorSet = new ValidatorSet(publicKeys);
 
 let myKeys: KeyPair | null = null;
@@ -87,13 +97,13 @@ if (VALIDATOR_INDEX !== undefined) {
   const passphrase = process.env.VALIDATOR_KEY_PASSPHRASE;
   if (!passphrase) {
     console.error(
-      '[node] Missing VALIDATOR_KEY_PASSPHRASE — this validator\'s private key is encrypted\n' +
-      '       at rest and cannot be loaded without the passphrase it was generated with.'
+      "[node] Missing VALIDATOR_KEY_PASSPHRASE — this validator's private key is encrypted\n" +
+        "       at rest and cannot be loaded without the passphrase it was generated with.",
     );
     process.exit(1);
   }
 
-  const stored = JSON.parse(readFileSync(path, 'utf-8'));
+  const stored = JSON.parse(readFileSync(path, "utf-8"));
 
   try {
     const { publicKey, privateKey } = unlockKeystore(stored, passphrase);
@@ -101,20 +111,28 @@ if (VALIDATOR_INDEX !== undefined) {
   } catch (err) {
     // Fail closed: wrong passphrase, tampered file, or mismatched keys all
     // land here. Never fall back to running unsigned or with a bad key.
-    console.error(`[node] Failed to unlock validator key: ${(err as Error).message}`);
+    console.error(
+      `[node] Failed to unlock validator key: ${(err as Error).message}`,
+    );
     process.exit(1);
   }
 
   console.log(`[node] Running as validator #${VALIDATOR_INDEX}`);
 } else {
-  console.log('[node] Running as a non-validating full node');
+  console.log("[node] Running as a non-validating full node");
 }
 
-const genesisAllocations = existsSync('data/genesis.json')
-  ? JSON.parse(readFileSync('data/genesis.json', 'utf-8'))
+const genesisAllocations = existsSync("data/genesis.json")
+  ? JSON.parse(readFileSync("data/genesis.json", "utf-8"))
   : {};
 
-const blockchain = new Blockchain(validatorSet, DATA_FILE, BLOCK_TIMEOUT_MS, SLOT_WAIT_MS, genesisAllocations);
+const blockchain = new Blockchain(
+  validatorSet,
+  DATA_FILE,
+  BLOCK_TIMEOUT_MS,
+  SLOT_WAIT_MS,
+  genesisAllocations,
+);
 // Known peers survive restarts (data/peers-<port>.json), so a restart doesn't
 // depend on the bootnode being up. This node never dials its own address.
 const peerTable = new PeerTable({ filePath: PEERS_FILE, bootnodes: BOOTNODES });
@@ -122,6 +140,13 @@ const p2p = new P2PNode(blockchain, P2P_PORT, peerTable);
 p2p.start();
 
 startApi(blockchain, p2p, API_PORT, myKeys);
+
+// Expire stale mempool txs even when no blocks arrive.
+const MEMPOOL_SWEEP_INTERVAL_MS = 30_000;
+setInterval(() => {
+  const removed = blockchain.sweepMempool();
+  if (removed > 0) console.log(`[mempool] Swept ${removed} stale tx`);
+}, MEMPOOL_SWEEP_INTERVAL_MS);
 
 // --- Automatic block proposal -----------------------------------------
 // Each validator checks, on a short poll, whether (a) there's actually
@@ -138,7 +163,10 @@ startApi(blockchain, p2p, API_PORT, myKeys);
 // exact same slot-ownership check, so it stays useful for forcing an
 // immediate proposal during testing/demos.
 if (myKeys) {
-  const POLL_INTERVAL_MS = Math.max(250, Math.floor(blockchain.slotDurationMs / 10));
+  const POLL_INTERVAL_MS = Math.max(
+    250,
+    Math.floor(blockchain.slotDurationMs / 10),
+  );
 
   setInterval(() => {
     const now = Date.now();
@@ -150,28 +178,36 @@ if (myKeys) {
 
     const waitRemaining = blockchain.getSlotWaitRemaining(now);
     if (waitRemaining > 0) {
-      console.debug(`[auto-propose] tick: still in slot wait period, ${waitRemaining}ms remaining (slot ${currentSlot})`);
+      console.debug(
+        `[auto-propose] tick: still in slot wait period, ${waitRemaining}ms remaining (slot ${currentSlot})`,
+      );
       return; // still in the wait period
     }
 
     const latest = blockchain.getLatestBlock();
     const latestSlot = blockchain.getSlot(latest.timestamp);
     if (currentSlot <= latestSlot) {
-      console.debug(`[auto-propose] tick: slot ${currentSlot} already used (latest block #${latest.index} is in slot ${latestSlot})`);
+      console.debug(
+        `[auto-propose] tick: slot ${currentSlot} already used (latest block #${latest.index} is in slot ${latestSlot})`,
+      );
       return; // slot already used
     }
 
     const owner = validatorSet.getValidatorForSlot(currentSlot);
     if (owner !== myKeys!.publicKey) {
       const ownerIndex = validatorSet.getAll().indexOf(owner);
-      console.debug(`[auto-propose] tick: slot ${currentSlot} belongs to validator #${ownerIndex}, not me (#${VALIDATOR_INDEX})`);
+      console.debug(
+        `[auto-propose] tick: slot ${currentSlot} belongs to validator #${ownerIndex}, not me (#${VALIDATOR_INDEX})`,
+      );
       return; // not my slot
     }
 
     const txs = blockchain.selectTransactionsForBlock();
     if (txs.length === 0) return; // nothing valid to propose
 
-    console.log(`[auto-propose] my slot (${currentSlot}) — proposing block #${latest.index + 1} with ${txs.length} pending tx`);
+    console.log(
+      `[auto-propose] my slot (${currentSlot}) — proposing block #${latest.index + 1} with ${txs.length} pending tx`,
+    );
 
     const block = Block.proposeBlock(
       {
@@ -181,22 +217,32 @@ if (myKeys) {
         previousHash: latest.hash,
         validatorPublicKey: myKeys!.publicKey,
       },
-      myKeys!.privateKey
+      myKeys!.privateKey,
     );
 
-    console.debug(`[auto-propose] block #${block.index} built, hash ${block.hash.slice(0, 10)}... — submitting to local chain`);
+    console.debug(
+      `[auto-propose] block #${block.index} built, hash ${block.hash.slice(0, 10)}... — submitting to local chain`,
+    );
 
     const result = blockchain.addBlock(block);
     if (result.success) {
-      console.log(`[auto-propose] Proposed block #${block.index} as validator #${VALIDATOR_INDEX} for slot ${currentSlot}`);
+      console.log(
+        `[auto-propose] Proposed block #${block.index} as validator #${VALIDATOR_INDEX} for slot ${currentSlot}`,
+      );
       p2p.broadcastNewBlock(block);
       console.debug(`[auto-propose] block #${block.index} broadcast to peers`);
     } else if (!result.alreadyHave) {
-      console.warn(`[auto-propose] Attempt for block #${latest.index + 1} rejected locally: ${result.reason}`);
+      console.warn(
+        `[auto-propose] Attempt for block #${latest.index + 1} rejected locally: ${result.reason}`,
+      );
     } else {
-      console.debug(`[auto-propose] block #${latest.index + 1} already present locally, skipping broadcast`);
+      console.debug(
+        `[auto-propose] block #${latest.index + 1} already present locally, skipping broadcast`,
+      );
     }
   }, POLL_INTERVAL_MS);
 
-  console.log(`[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms (${SLOT_WAIT_MS}ms slot wait enforced)`);
+  console.log(
+    `[auto-propose] Enabled — polling every ${POLL_INTERVAL_MS}ms, slot width ${BLOCK_TIMEOUT_MS}ms (${SLOT_WAIT_MS}ms slot wait enforced)`,
+  );
 }
